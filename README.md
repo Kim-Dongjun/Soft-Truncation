@@ -43,10 +43,18 @@ main.py:
   --mode: <train|eval> eval mode contains likelihood evaluation and FID/IS computation
   --workdir: Working directory to save all artifacts such as checkpoints/samples/log
 ```
-## Performances
+## Results
+Out model achieves the following performance on:
+
+### [Image Generation on CIFAR10](https://paperswithcode.com/sota/image-generation-on-cifar-10)
+
 | Experimentsal Setup | NLL (BPD) | FID-50k | IS-50k |
 |:----------|:-------:|:----------:|:----------:|
 | `cifar10_uncsn_1e-3/` | 2.96 | 2.55 | 9.97 |
 | `cifar10_uncsn_deep_1e-3_mid/` | 2.83 | **2.33** | **10.11** |
 | `cifar10_uncsn_deep_1e-5_mid/` | **2.06** | 2.58 | 9.74 |
 | `cifar10_uncsn_deep_1e-5/` | 2.35 | 2.38 | 9.87 |
+
+## Checkpoints
+
+You can download the checkpoints [here](https://drive.google.com/drive/folders/1Wyk0ucFW-QDS_g1EcPm361LWWgWqJ6L_?usp=sharing)
