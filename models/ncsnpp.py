@@ -240,14 +240,8 @@ class NCSNpp(nn.Module):
     if self.embedding_type == 'fourier':
       # Gaussian Fourier features embeddings.
       used_sigmas = time_cond
-      if self.config.add.model_mode.lower() == 'original':
-        temb = modules[m_idx](torch.log(used_sigmas))
-      elif self.config.add.model_mode.lower() == 'forward':
-        temb = modules[m_idx](used_sigmas)
-      elif self.config.add.model_mode.lower() == 'reciprocal':
-        used_sigmas_transformed = self.sde.transform(time_cond)
-        temb = modules[m_idx](used_sigmas_transformed)
-      #temb = modules[m_idx](torch.log(used_sigmas))
+      used_sigmas_transformed = self.sde.transform(time_cond)
+      temb = modules[m_idx](used_sigmas_transformed)
       m_idx += 1
 
     elif self.embedding_type == 'positional':
