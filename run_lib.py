@@ -68,15 +68,8 @@ def train(config, workdir):
   writer = tensorboard.SummaryWriter(tb_dir)
 
   # Setup SDEs
-  if config.training.sde.lower() == 've-sde':
-    sde = sde_lib.VESDE(transform_type=config.add.transform, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
-    sampling_eps = 1e-5
-  elif config.training.sde.lower() == 'rve-sde':
-    sde = sde_lib.RVESDE(transform_type=config.add.transform, eta=config.add.eta,
-                                   sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
-    sampling_eps = 1e-5
-  else:
-    raise NotImplementedError(f"SDE {config.training.sde} unknown.")
+  sde = sde_lib.RVESDE(eta=config.uncsn.eta, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
+  sampling_eps = 1e-5
 
   # Initialize model.
   score_model = mutils.create_model(config, sde)
@@ -218,15 +211,8 @@ def evaluate(config,
   num_scales = config.model.num_scales
 
   # Setup SDEs
-  if config.training.sde.lower() == 'vesde':
-    sde = sde_lib.VESDE(transform_type=config.add.transform, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=num_scales)
-    sampling_eps = 1e-5
-  elif config.training.sde.lower() == 'rve-sde':
-    sde = sde_lib.RVESDE(transform_type=config.add.transform, eta=config.add.eta, sigma_min=config.model.sigma_min,
-                                   sigma_max=config.model.sigma_max, N=num_scales)
-    sampling_eps = 1e-5
-  else:
-    raise NotImplementedError(f"SDE {config.training.sde} unknown.")
+  sde = sde_lib.RVESDE(eta=config.uncsn.eta, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=num_scales)
+  sampling_eps = 1e-5
 
   # Initialize model
   score_model = mutils.create_model(config, sde)

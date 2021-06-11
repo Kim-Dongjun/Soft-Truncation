@@ -69,7 +69,7 @@ class SDE(abc.ABC):
     """
     pass
 
-  def get_random_times(self, begin_time, random_t, size, device, t_min):
+  def get_random_times(self, threshold, size, device, t_min):
     pass
 
   def get_time(self):
@@ -304,10 +304,10 @@ class VESDE(SDE):
     time = np.log(sigma_level/self.sigma_min)/np.log(self.sigma_max/self.sigma_min)
     return time
 
-  def get_random_times(self, begin_time, random_t, size, device, t_min):
-    if begin_time == 'initial':
+  def get_random_times(self, threshold, size, device, t_min):
+    if threshold == 'initial':
       min_ = t_min
-    elif begin_time == 'sampling':
+    elif threshold == 'middle':
       time = self.get_time()
       min_ = np.random.rand() * (time - t_min) + t_min
     else:
@@ -315,7 +315,7 @@ class VESDE(SDE):
     return torch.rand(size, device=device) * (self.T - min_) + min_
 
 class RVESDE(SDE):
-  def __init__(self, transform_type='old', eta=1e-5, sigma_min=0.01, sigma_max=50, N=1000):
+  def __init__(self, eta=1e-5, sigma_min=0.01, sigma_max=50, N=1000):
     """Construct a Variance Exploding SDE.
 
     Args:
@@ -327,7 +327,6 @@ class RVESDE(SDE):
     self.sigma_min = sigma_min
     self.sigma_max = sigma_max
     self.eta = eta
-    self.transform_type = transform_type
     self.t_min = 1e-5
     self.base_sigma = pow(self.eta / self.sigma_max, 1. / ((1. / self.t_min - 1.)))
     self.const = self.sigma_max ** 2 / self.base_sigma ** 2
@@ -376,12 +375,6 @@ class RVESDE(SDE):
 
   def discretize(self, x, t, next_t):
     """SMLD(NCSN) discretization."""
-    #timestep = (t * (self.N - 1) / self.T).long()
-    #sigma = self.discrete_sigmas.to(t.device)[timestep]
-    #print("sigma in predictor algorithm : ", sigma[0].item())
-    #print("sigma(t) in predictor algorithm : ", self.marginal_prob(x, t)[1][0].item())
-    #adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t),
-    #                             self.discrete_sigmas[timestep - 1].to(t.device))
     sigma = self.marginal_prob(x, t)[1]
     if next_t.type == 'torch.IntTensor':
       next_sigma = next_t
@@ -397,34 +390,16 @@ class RVESDE(SDE):
     return time
 
   def transform(self, sigmas):
-    #res = (sigmas > 0.01) * (self.constant_ * (torch.log(sigmas) - np.log(self.sigma_max)) - 1.) + (sigmas < 0.01) * 1e-10 * (
-    #          self.k_1 / (sigmas + self.eta) + self.k_2)
-    if self.transform_type == 'forward':
-      res = sigmas
-    elif self.transform_type == 'old':
-      res = 1. / sigmas
-    elif self.transform_type == 'ver1':
-      res = (sigmas > 0.01) * (self.constant_ * (torch.log(sigmas) - np.log(self.sigma_max)) - 1.) + (sigmas < 0.01) * 1e-10 * (
-               self.k_1 / (sigmas + self.eta) + self.k_2)
-    elif self.transform_type == 'ver2':
-      res = (sigmas > 0.01) * (-torch.log(sigmas) + np.log(self.sigma_0)) \
-                 + (sigmas < 0.01) * (self.c_1_ / (sigmas + 1e-4) + self.c_2_)
-    elif self.transform_type == 'ver3':
-      res = (sigmas > 0.01) * torch.log(sigmas) + (sigmas < 0.01) * (-self.c_1_ / (sigmas + 1e-4) + self.c_2__)
-    else:
-      raise NotImplementedError
-    return res
+    ret = (sigmas > 0.01) * torch.log(sigmas) + (sigmas < 0.01) * (-self.c_1_ / (sigmas + 1e-4) + self.c_2__)
+    return ret
 
-  def get_random_times(self, begin_time, random_t, size, device, t_min):
-    if begin_time == 'sampling':
+  def get_random_times(self, threshold, size, device, t_min):
+    if threshold == 'middle':
       time = self.get_time()
-    elif begin_time == 'initial':
+    elif threshold == 'initial':
       time = 1. / self.T
     else:
       raise NotImplementedError
-    if random_t:
-      max_ = np.random.rand() * (1./t_min - time) + time
-    else:
-      max_ = (1./t_min - 1./self.T)
+    max_ = np.random.rand() * (1./t_min - time) + time
     t = torch.rand(size, device=device) * max_ + 1. / self.T
-    return 1. / t#, max_
+    return 1. / t

@@ -84,25 +84,19 @@ def get_sde_loss_fn(config, sde, train, reduce_mean=True, continuous=True, likel
       loss: A scalar that represents the average loss value across the mini-batch.
     """
     score_fn = mutils.get_score_fn(sde, model, train=train, continuous=continuous)
-    t = sde.get_random_times(begin_time=config.add.begin_time, random_t=config.add.random_t, size=batch.shape[0], device=batch.device, t_min=eps)
+    t = sde.get_random_times(threshold=config.uncsn.threshold, size=batch.shape[0], device=batch.device, t_min=eps)
     z = torch.randn_like(batch)
     mean, std = sde.marginal_prob(batch, t)
     perturbed_data = mean + std[:, None, None, None] * z
     score = score_fn(perturbed_data, t)
 
-    if config.add.loss:
-      losses = torch.square(score + z / std[:, None, None, None])
+    if not likelihood_weighting:
+      losses = torch.square(score * std[:, None, None, None] + z)
       losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
-
-      losses = losses / losses.detach()
     else:
-      if not likelihood_weighting:
-        losses = torch.square(score * std[:, None, None, None] + z)
-        losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)
-      else:
-        g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
-        losses = torch.square(score + z / std[:, None, None, None])
-        losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
+      g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
+      losses = torch.square(score + z / std[:, None, None, None])
+      losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
 
     loss = torch.mean(losses)
     return loss

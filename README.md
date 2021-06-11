@@ -1,6 +1,6 @@
 # Score Matching Model for Unbounded Data Score
 
-This repo contains an official PyTorch implementation for the paper `Score Matching Model for Unbounded Data Score`.
+This repo contains an official PyTorch implementation for the paper [`Score Matching Model for Unbounded Data Score`](https://arxiv.org/abs/2106.05527).
 
 --------------------
 
