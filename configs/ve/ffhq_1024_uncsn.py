@@ -70,14 +70,8 @@ def get_config():
   data.random_flip = True
   data.uniform_dequantization = False
   data.num_channels = 3
-  # Plug in your own path to the tfrecords file.
-  #data.tfrecords_path = os.path.join(
-  #  os.path.dirname(os.path.dirname(
-  #    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))))),
-  #  'downloaded_data/FFHQ_1024/ffhq-r10.tfrecords')
   data.tfrecords_path = os.path.join(
-    os.path.dirname(
-      os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))),
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))),
     'downloaded_data/FFHQ_1024/ffhq-r10.tfrecords')
 
   # model
@@ -124,15 +118,9 @@ def get_config():
   config.seed = 42
   config.device = torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu')
 
-  # DJ
-  config.add = add = ml_collections.ConfigDict()
-  add.model_mode = 'reciprocal'
+  config.uncsn = uncsn = ml_collections.ConfigDict()
   model.sigma_min = 1e-4
-  add.eta = 1e-4
-  add.transform = 'ver3'
-  add.begin_time = 'sampling'
-  add.loss = False
-  add.random_t = True
-  sampling.probability_flow = False
+  uncsn.eta = 1e-4
+  uncsn.threshold = 'middle'
 
   return config

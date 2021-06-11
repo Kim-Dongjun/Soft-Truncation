@@ -60,15 +60,9 @@ def get_config():
   model.init_scale = 0.0
   model.conv_size = 3
 
-  # DJ
-  config.add = add = ml_collections.ConfigDict()
-  add.model_mode = 'reciprocal'
+  config.uncsn = uncsn = ml_collections.ConfigDict()
   model.sigma_min = 1e-3
-  add.eta = 1e-3
-  add.transform = 'ver3'
-  add.begin_time = 'sampling'
-  add.loss = False
-  add.random_t = True
-  sampling.probability_flow = False
+  uncsn.eta = 1e-3
+  uncsn.threshold = 'middle'
 
   return config

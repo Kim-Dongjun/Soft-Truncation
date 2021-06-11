@@ -42,7 +42,7 @@ def get_config():
   data.image_size = 256
 
   data.tfrecords_path = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))))),
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))),
     'downloaded_data/CelebAHQ_256/celeba_r08.tfrecords')
 
   # model
@@ -71,15 +71,9 @@ def get_config():
   model.fourier_scale = 16
   model.conv_size = 3
 
-  # DJ
-  config.add = add = ml_collections.ConfigDict()
-  add.model_mode = 'reciprocal'
+  config.uncsn = uncsn = ml_collections.ConfigDict()
   model.sigma_min = 1e-3
-  add.eta = 1e-3
-  add.transform = 'ver3'
-  add.begin_time = 'initial'
-  add.loss = False
-  add.random_t = True
-  sampling.probability_flow = False
+  uncsn.eta = 1e-3
+  uncsn.threshold = 'initial'
 
   return config
