@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by anonymous authors of "Score Matching Model for Unbounded Data Score"
-# submitted on NeurIPS 2021 conference.
+# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
 
 
 

@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by anonymous authors of "Score Matching Model for Unbounded Data Score"
-# submitted on NeurIPS 2021 conference.
+# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
 
 # pylint: skip-file
 """Training and evaluation for score-based generative models. """
@@ -68,7 +67,7 @@ def train(config, workdir):
   writer = tensorboard.SummaryWriter(tb_dir)
 
   # Setup SDEs
-  sde = sde_lib.RVESDE(eta=config.uncsn.eta, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
+  sde = sde_lib.RVESDE(eta=config.udm.eta, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
   sampling_eps = 1e-5
 
   # Initialize model.
@@ -124,11 +123,11 @@ def train(config, workdir):
   logging.info("Starting training loop at step %d." % (initial_step,))
   for step in range(initial_step, num_train_steps + 1):
     try:
-      batch = get_batch(config, next(train_iter), scaler)
+      batch = get_batch(config, next(train_iter), scaler, dequantization=True)
     except:
       logging.info("New Epoch Start")
       train_iter = iter(train_ds)
-      batch = get_batch(config, next(train_iter), scaler)
+      batch = get_batch(config, next(train_iter), scaler, dequantization=True)
     # Execute one training step
     loss = train_step_fn(state, batch)
 
@@ -211,7 +210,7 @@ def evaluate(config,
   num_scales = config.model.num_scales
 
   # Setup SDEs
-  sde = sde_lib.RVESDE(eta=config.uncsn.eta, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=num_scales)
+  sde = sde_lib.RVESDE(eta=config.udm.eta, sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=num_scales)
   sampling_eps = 1e-5
 
   # Initialize model
@@ -286,7 +285,7 @@ def evaluate(config,
         bpd_iter = iter(ds_bpd)  # pytype: disable=wrong-arg-types
         batch_id = 0
         for _ in range(len(list(ds_bpd))):
-          eval_batch = get_batch(config, next(bpd_iter), scaler)
+          eval_batch = get_batch(config, next(bpd_iter), scaler, dequantization=True)
           bpd = likelihood_fn(score_model, eval_batch)[0]
           bpd = bpd.detach().cpu().numpy().reshape(-1)
           bpds.extend(bpd)
@@ -306,7 +305,6 @@ def evaluate(config,
     if config.eval.enable_sampling:
       num_sampling_rounds = (config.eval.num_samples-1) // config.eval.batch_size + 1
       for r in range(num_sampling_rounds):
-        #sampling_idx = r
         sampling_idx = np.random.randint(0, 10000000)
         samples = sampling_lib.get_samples(config, score_model, sampling_fn, ckpt, sampling_idx, this_sample_dir)
         save.save_image_(samples, sampling_idx, this_sample_dir)

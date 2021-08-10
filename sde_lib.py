@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by anonymous authors of "Score Matching Model for Unbounded Data Score"
-# submitted on NeurIPS 2021 conference.
+# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
 
 
 
@@ -69,7 +68,7 @@ class SDE(abc.ABC):
     """
     pass
 
-  def get_random_times(self, threshold, size, device, t_min):
+  def get_random_times(self, st, size, device, t_min):
     pass
 
   def get_time(self):
@@ -304,10 +303,10 @@ class VESDE(SDE):
     time = np.log(sigma_level/self.sigma_min)/np.log(self.sigma_max/self.sigma_min)
     return time
 
-  def get_random_times(self, threshold, size, device, t_min):
-    if threshold == 'initial':
+  def get_random_times(self, st, size, device, t_min):
+    if st == 'long':
       min_ = t_min
-    elif threshold == 'middle':
+    elif st == 'short':
       time = self.get_time()
       min_ = np.random.rand() * (time - t_min) + t_min
     else:
@@ -393,10 +392,10 @@ class RVESDE(SDE):
     ret = (sigmas > 0.01) * torch.log(sigmas) + (sigmas < 0.01) * (-self.c_1_ / (sigmas + 1e-4) + self.c_2__)
     return ret
 
-  def get_random_times(self, threshold, size, device, t_min):
-    if threshold == 'middle':
+  def get_random_times(self, st, size, device, t_min):
+    if st == 'short':
       time = self.get_time()
-    elif threshold == 'initial':
+    elif st == 'long':
       time = 1. / self.T
     else:
       raise NotImplementedError

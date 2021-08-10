@@ -19,16 +19,17 @@ from cleanfid.utils import *
 from cleanfid.features import *
 from cleanfid.resize import *
 
-
 """
 Compute the FID score given the mu, sigma of two sets
 """
+
+
 def frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
     """Numpy implementation of the Frechet Distance.
     The Frechet distance between two multivariate Gaussians X_1 ~ N(mu_1, C_1)
     and X_2 ~ N(mu_2, C_2) is
             d^2 = ||mu_1 - mu_2||^2 + Tr(C_1 + C_2 - 2*sqrt(C_1*C_2)).
-    Stable version by Dougal J. Sutherland (not Author).
+    Stable version by Dougal J. Sutherland.
     Params:
     -- mu1   : Numpy array containing the activations of a layer of the
                inception net (like returned by the function 'get_predictions')
@@ -79,6 +80,8 @@ def frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
 """
 Compute the KID score given the sets of features
 """
+
+
 def kernel_distance(feats1, feats2, num_subsets=100, max_subset_size=1000):
     n = feats1.shape[1]
     m = min(min(feats1.shape[0], feats2.shape[0]), max_subset_size)
@@ -96,39 +99,32 @@ def kernel_distance(feats1, feats2, num_subsets=100, max_subset_size=1000):
 """
 Compute the inception features for a batch of images
 """
+
+
 def get_batch_features(batch, model, device):
     with torch.no_grad():
         feat = model(batch.to(device))
     return feat.detach().cpu().numpy()
 
+
 """
 Compute the inception features for a list of files
 """
+
+
 def get_files_features(fdir, l_files, model=None, num_workers=12,
                        batch_size=128, device=torch.device("cuda"),
-                       mode="clean", custom_fn_resize=None, 
+                       mode="clean", custom_fn_resize=None,
                        description="", sampling_itr=''):
     # define the model if it is not specified
     if model is None:
         model = build_feature_extractor(mode, device)
-    
+
     # build resizing function based on options
     if custom_fn_resize is not None:
         fn_resize = custom_fn_resize
     else:
         fn_resize = build_resizer(mode)
-    
-    '''# wrap the images in a dataloader for parallelizing the resize operation
-    dataset = ResizeDataset(l_files, fn_resize=fn_resize)
-    dataloader = torch.utils.data.DataLoader(dataset,
-                    batch_size=batch_size, shuffle=False,
-                    drop_last=False, num_workers=num_workers)
-
-    # collect all inception features
-    l_feats = []
-    for batch in tqdm(dataloader, desc=description):
-        l_feats.append(get_batch_features(batch, model, device))
-    np_feats = np.concatenate(l_feats)'''
 
     l_feats = []
     transforms = torchvision.transforms.ToTensor()
@@ -139,7 +135,8 @@ def get_files_features(fdir, l_files, model=None, num_workers=12,
         else:
             save_filename = f'np_feats_{mode}_{file.split("/")[-1].split(".")[0].split("_")[1]}_{file.split("/")[-1].split(".")[0].split("_")[3]}.npz'
         if not os.path.exists(os.path.join(fdir, f'features/{save_filename}')):
-            img_np = np.load(file)['samples'].reshape(-1,256,256,3)
+            img_np = np.load(file)['samples']  # .reshape(-1,256,256,3)
+            print("generated: ", img_np.shape)
             itr = 0
             for img in img_np:
                 img_resized = fn_resize(img)
@@ -148,15 +145,15 @@ def get_files_features(fdir, l_files, model=None, num_workers=12,
                 elif img_resized.dtype == "float32":
                     img_t = transforms(img_resized)
                 if itr == 0:
-                    batch = img_t.reshape((1,)+img_t.shape)
+                    batch = img_t.reshape((1,) + img_t.shape)
                 else:
                     batch = torch.cat((batch, img_t.reshape((1,) + img_t.shape)))
                 if itr == 0:
-                    print("batch: ", torch.min(batch[0]), torch.max(batch[0]))
                     print("--------------------------")
                     print(f"file iter : {file_itr}/{len(l_files)}")
                     file_itr += 1
                 itr += 1
+            print("batch: ", torch.min(batch), torch.max(batch), batch.shape)
             l_feats.append(get_batch_features(batch, model, device))
             with tf.io.gfile.GFile(
                     os.path.join(fdir, f'features/{save_filename}'),
@@ -170,12 +167,15 @@ def get_files_features(fdir, l_files, model=None, num_workers=12,
         print(f"l_feats stats : {np.min(l_feats[-1]), np.max(l_feats[-1])}")
         print("l_feats size : ", len(l_feats))
     np_feats = np.concatenate(l_feats)
-    #print("HoHo : ", l_feats[0][0][:10])
+
     return np_feats
+
 
 """
 Compute the inception features for a folder of features
 """
+
+
 def get_folder_features(fdir, model=None, num_workers=12, num=None,
                         shuffle=False, seed=0, batch_size=128, device=torch.device("cuda"),
                         mode="clean", custom_fn_resize=None, description="", sampling_itr=0):
@@ -183,8 +183,7 @@ def get_folder_features(fdir, model=None, num_workers=12, num=None,
     files = sorted([file for ext in EXTENSIONS
                     for file in glob(os.path.join(fdir, f"*.{ext}"))])
     files_tmp = []
-    #print("file directory : ", fdir)
-    #print("files : ", files)
+
     for file in files:
         print(file)
         print(file.split('/')[-1])
@@ -198,7 +197,7 @@ def get_folder_features(fdir, model=None, num_workers=12, num=None,
                     files_tmp.append(file)
 
     files = files_tmp
-    #print("files: ", files)
+
     if num is not None:
         if shuffle:
             random.seed(seed)
@@ -212,22 +211,28 @@ def get_folder_features(fdir, model=None, num_workers=12, num=None,
                                   sampling_itr=sampling_itr)
     return np_feats
 
+
 """
 Compute the FID score given the inception features stack
 """
+
+
 def fid_from_feats(feats1, feats2):
     mu1, sig1 = np.mean(feats1, axis=0), np.cov(feats1, rowvar=False)
     mu2, sig2 = np.mean(feats2, axis=0), np.cov(feats2, rowvar=False)
     return frechet_distance(mu1, sig1, mu2, sig2)
 
+
 """
 Computes the FID score for a folder of images for a specific dataset 
 and a specific resolution
 """
+
+
 def fid_folder(fdir, dataset, dataset_name, dataset_res, dataset_split,
                model=None, mode="clean", num_workers=12,
                batch_size=128, device=torch.device("cuda"),
-               sampling_itr=0, assetdir='', config=None):
+               sampling_itr=0, assetdir='', config=None, dequantization=True):
     # define the model if it is not specified
     if model is None:
         model = build_feature_extractor(mode, device)
@@ -235,8 +240,8 @@ def fid_folder(fdir, dataset, dataset_name, dataset_res, dataset_split,
     if dataset == []:
         ref_mu, ref_sigma, stats = get_statistics(config, assetdir, mode)
     else:
-        ref_mu, ref_sigma = get_statistics_from_dataset(fdir, config, dataset, mode, device)
-    #ref_mu, ref_sigma = get_reference_statistics(dataset_name, dataset_res,
+        ref_mu, ref_sigma = get_statistics_from_dataset(fdir, config, dataset, mode, device, dequantization)
+    # ref_mu, ref_sigma = get_reference_statistics(dataset_name, dataset_res,
     #                                mode=mode, seed=0, split=dataset_split)
     fbname = os.path.basename(fdir)
     # get all inception features for folder images
@@ -257,11 +262,11 @@ def fid_folder(fdir, dataset, dataset_name, dataset_res, dataset_split,
         num_samples = 70000
     else:
         num_samples = 50000
-    np_feats = np_feats[:num_samples]
+    np_feats = np_feats[-num_samples:]
     num_samples = np_feats.shape[0]
     logging.info(f'Number of samples : {num_samples}')
     print("shape of np_feats : ", np_feats.shape)
-    #print("!! : ", np_feats[0][:10])
+    # print("!! : ", np_feats[0][:10])
     mu = np.mean(np_feats, axis=0)
     sigma = np.cov(np_feats, rowvar=False)
     print("mu stats : ", np.min(mu), np.max(mu))
@@ -272,6 +277,7 @@ def fid_folder(fdir, dataset, dataset_name, dataset_res, dataset_split,
     fid = frechet_distance(mu, sigma, ref_mu, ref_sigma)
     return fid
 
+
 def get_statistics(config, assetdir, mode):
     from evaluation import load_dataset_stats
     stats = load_dataset_stats(config, assetdir, mode)
@@ -281,8 +287,9 @@ def get_statistics(config, assetdir, mode):
         stats = stats['real_feats']
         return np.mean(stats, axis=0), np.cov(stats, rowvar=False), stats
 
-def get_statistics_from_dataset(fdir, config, dataset, mode, device):
-    if not os.path.exists(os.path.join(fdir, 'features/real_feats.npz')):
+
+def get_statistics_from_dataset(fdir, config, dataset, mode, device, dequantization):
+    if not os.path.exists(os.path.join(fdir, f'features/real_feats_{mode}.npz')):
         model = build_feature_extractor(mode, device)
         scaler = datasets.get_data_scaler(config)
         # build resizing function based on options
@@ -290,35 +297,46 @@ def get_statistics_from_dataset(fdir, config, dataset, mode, device):
         transforms = torchvision.transforms.ToTensor()
 
         real_feats = []
-        #for batch_id in range(len(dataset)):
-        #for i, imgs in enumerate(dataset):
-        data_num = 70000
+        data_num = 105000
         batch_size = 200
         for i in range(data_num // batch_size):
-            imgs_np = next(dataset)['image']._numpy()
-            itr = 0
-            for img in imgs_np:
-                img_resized = fn_resize(img)
-                if img_resized.dtype == "uint8":
-                    img_t = transforms(np.array(img_resized)) * 255
-                elif img_resized.dtype == "float32":
-                    img_t = transforms(img_resized)
-                if itr == 0:
-                    batch = img_t.reshape((1,) + img_t.shape)
+            if not os.path.exists(os.path.join(fdir, f'features/real_feats_{mode}_{i}.npz')):
+                if config.data.dataset != 'STL10':
+                    imgs_np = next(dataset)['image']._numpy()
                 else:
-                    batch = np.concatenate((batch, img_t.reshape((1,) + img_t.shape)))
-                itr += 1
-            #print("batch stats : ", np.min(batch), np.max(batch))
-            print("--------------------------")
-            print(f"real dataset : {i * imgs_np.shape[0]}")
-            real_feats.append(get_batch_features(torch.tensor(batch) * 255., model, device))
-            print(f"batch stats : {np.min(real_feats[-1]), np.max(real_feats[-1])}")
-            tf.io.gfile.makedirs(os.path.join(fdir, 'features/'))
-            with tf.io.gfile.GFile(
-                    os.path.join(fdir, f'features/real_feats_{mode}_{i}.npz'), "wb") as fout:
-                io_buffer = io.BytesIO()
-                np.savez_compressed(io_buffer, real_feats=np.array(real_feats[-1]))
-                fout.write(io_buffer.getvalue())
+                    imgs_np = (next(dataset)[0].permute(0, 2, 3, 1).cpu().detach().numpy() * 255.).astype(np.uint8)
+                print("real: ", imgs_np.shape)
+                itr = 0
+                for img in imgs_np:
+                    img_resized = fn_resize(img)
+                    if img_resized.dtype == "uint8":
+                        if config.data.dataset != 'STL10':
+                            img_t = transforms(np.array(img_resized)) * 255
+                        else:
+                            img_t = transforms(np.array(img_resized))
+                    elif img_resized.dtype == "float32":
+                        img_t = transforms(img_resized)
+                    if itr == 0:
+                        batch = img_t.reshape((1,) + img_t.shape)
+                    else:
+                        batch = np.concatenate((batch, img_t.reshape((1,) + img_t.shape)))
+                    itr += 1
+                print("batch stats : ", np.min(batch), np.max(batch), batch.shape)
+                print("--------------------------")
+                print(f"real dataset : {i * imgs_np.shape[0]}")
+                if config.data.dataset != 'STL10':
+                    real_feats.append(get_batch_features(torch.tensor(batch) * 255., model, device))
+                else:
+                    real_feats.append(get_batch_features(torch.tensor(batch), model, device))
+                print(f"real_feats stats : {np.min(real_feats[-1]), np.max(real_feats[-1])}")
+                tf.io.gfile.makedirs(os.path.join(fdir, 'features/'))
+                with tf.io.gfile.GFile(
+                        os.path.join(fdir, f'features/real_feats_{mode}_{i}.npz'), "wb") as fout:
+                    io_buffer = io.BytesIO()
+                    np.savez_compressed(io_buffer, real_feats=np.array(real_feats[-1]))
+                    fout.write(io_buffer.getvalue())
+            else:
+                real_feats.append(np.load(os.path.join(fdir, f'features/real_feats_{mode}_{i}.npz'))['real_feats'])
         real_feats = np.concatenate(real_feats, axis=0)
         tf.io.gfile.makedirs(os.path.join(fdir, 'features/'))
         with tf.io.gfile.GFile(
@@ -327,17 +345,20 @@ def get_statistics_from_dataset(fdir, config, dataset, mode, device):
             np.savez_compressed(io_buffer, real_feats=real_feats)
             fout.write(io_buffer.getvalue())
     else:
-        real_feats = np.load(os.path.join(fdir, f'features/real_feats.npz'))['real_feats']
+        real_feats = np.load(os.path.join(fdir, f'features/real_feats_{mode}.npz'))['real_feats']
     ref_mu = np.mean(real_feats, axis=0)
     ref_sigma = np.cov(real_feats, rowvar=False)
     return ref_mu, ref_sigma
 
+
 """
 Compute the FID stats from a generator model
 """
-def get_model_features(G, model, mode="clean", z_dim=512, 
-        num_gen=50_000, batch_size=128,
-        device=torch.device("cuda"), desc="FID model: "):
+
+
+def get_model_features(G, model, mode="clean", z_dim=512,
+                       num_gen=50_000, batch_size=128,
+                       device=torch.device("cuda"), desc="FID model: "):
     fn_resize = build_resizer(mode)
     # Generate test features
     num_iters = int(np.ceil(num_gen / batch_size))
@@ -367,6 +388,8 @@ def get_model_features(G, model, mode="clean", z_dim=512,
 Computes the FID score for a generator model for a specific dataset 
 and a specific resolution
 """
+
+
 def fid_model(G, dataset_name, dataset_res, dataset_split,
               model=None, z_dim=512, num_gen=50_000,
               mode="clean", num_workers=0, batch_size=128,
@@ -382,8 +405,8 @@ def fid_model(G, dataset_name, dataset_res, dataset_split,
 
     # Generate test features
     np_feats = get_model_features(G, model, mode=mode,
-        z_dim=z_dim, num_gen=num_gen,
-        batch_size=batch_size, device=device)
+                                  z_dim=z_dim, num_gen=num_gen,
+                                  batch_size=batch_size, device=device)
 
     mu = np.mean(np_feats, axis=0)
     sigma = np.cov(np_feats, rowvar=False)
@@ -394,12 +417,14 @@ def fid_model(G, dataset_name, dataset_res, dataset_split,
 """
 Computes the FID score between the two given folders
 """
+
+
 def compare_folders(fdir1, fdir2, feat_model, mode, num_workers=0,
                     batch_size=8, device=torch.device("cuda")):
     # get all inception features for the first folder
     fbname1 = os.path.basename(fdir1)
     np_feats1 = get_folder_features(fdir1, feat_model, num_workers=num_workers,
-                                    batch_size=batch_size, device=device, mode=mode, 
+                                    batch_size=batch_size, device=device, mode=mode,
                                     description=f"FID {fbname1} : ")
     mu1 = np.mean(np_feats1, axis=0)
     sigma1 = np.cov(np_feats1, rowvar=False)
@@ -417,16 +442,19 @@ def compare_folders(fdir1, fdir2, feat_model, mode, num_workers=0,
 """
 Test if a custom statistic exists
 """
+
+
 def test_stats_exists(name, mode):
     stats_folder = os.path.join(os.path.dirname(cleanfid.__file__), "stats")
-    split, res="custom", "na"
+    split, res = "custom", "na"
     fname = f"{name}_{mode}_{split}_{res}.npz"
     fpath = os.path.join(stats_folder, fname)
     return os.path.exists(fpath)
 
+
 def remove_custom_stats(name, mode="clean"):
     stats_folder = os.path.join(os.path.dirname(cleanfid.__file__), "stats")
-    split, res="custom", "na"
+    split, res = "custom", "na"
     outname = f"{name}_{mode}_{split}_{res}.npz"
     outf = os.path.join(stats_folder, outname)
     if not os.path.exists(outf):
@@ -438,8 +466,10 @@ def remove_custom_stats(name, mode="clean"):
 """
 Cache a custom dataset statistics file
 """
-def make_custom_stats(name, fdir, num=None, mode="clean", 
-                    num_workers=0, batch_size=64, device=torch.device("cuda")):
+
+
+def make_custom_stats(name, fdir, num=None, mode="clean",
+                      num_workers=0, batch_size=64, device=torch.device("cuda")):
     stats_folder = os.path.join(os.path.dirname(cleanfid.__file__), "stats")
     split, res = "custom", "na"
     outname = f"{name}_{mode}_{split}_{res}.npz"
@@ -454,34 +484,34 @@ def make_custom_stats(name, fdir, num=None, mode="clean",
     fbname = os.path.basename(fdir)
     # get all inception features for folder images
     np_feats = get_folder_features(fdir, feat_model, num_workers=num_workers, num=num,
-                                    batch_size=batch_size, device=device,
-                                    mode=mode, description=f"FID {fbname} : ")
+                                   batch_size=batch_size, device=device,
+                                   mode=mode, description=f"FID {fbname} : ")
     mu = np.mean(np_feats, axis=0)
     sigma = np.cov(np_feats, rowvar=False)
     print(f"saving custom stats to {outf}")
     np.savez_compressed(outf, mu=mu, sigma=sigma)
 
 
-def compute_kid(fdir1=None, fdir2=None, gen=None, 
-            mode="clean", num_workers=12, batch_size=32,
-            device=torch.device("cuda"), dataset_name="FFHQ",
-            dataset_res=1024, dataset_split="train", num_gen=50_000, z_dim=512):
+def compute_kid(fdir1=None, fdir2=None, gen=None,
+                mode="clean", num_workers=12, batch_size=32,
+                device=torch.device("cuda"), dataset_name="FFHQ",
+                dataset_res=1024, dataset_split="train", num_gen=50_000, z_dim=512):
     # build the feature extractor based on the mode
     feat_model = build_feature_extractor(mode, device)
-    
+
     # if both dirs are specified, compute FID between folders
     if fdir1 is not None and fdir2 is not None:
         print("compute KID between two folders")
         # get all inception features for the first folder
         fbname1 = os.path.basename(fdir1)
         np_feats1 = get_folder_features(fdir1, None, num_workers=num_workers,
-                            batch_size=batch_size, device=device, mode=mode, 
-                            description=f"KID {fbname1} : ")
+                                        batch_size=batch_size, device=device, mode=mode,
+                                        description=f"KID {fbname1} : ")
         # get all inception features for the second folder
         fbname2 = os.path.basename(fdir2)
         np_feats2 = get_folder_features(fdir2, None, num_workers=num_workers,
-                            batch_size=batch_size, device=device, mode=mode, 
-                            description=f"KID {fbname2} : ")
+                                        batch_size=batch_size, device=device, mode=mode,
+                                        description=f"KID {fbname2} : ")
         score = kernel_distance(np_feats1, np_feats2)
         return score
 
@@ -491,12 +521,12 @@ def compute_kid(fdir1=None, fdir2=None, gen=None,
         # define the model if it is not specified
         model = build_feature_extractor(mode, device)
         ref_feats = get_reference_statistics(dataset_name, dataset_res,
-                            mode=mode, seed=0, split=dataset_split, metric="KID")
+                                             mode=mode, seed=0, split=dataset_split, metric="KID")
         fbname = os.path.basename(fdir)
         # get all inception features for folder images
         np_feats = get_folder_features(fdir, model, num_workers=num_workers,
-                                        batch_size=batch_size, device=device,
-                                        mode=mode, description=f"KID {fbname} : ")
+                                       batch_size=batch_size, device=device,
+                                       mode=mode, description=f"KID {fbname} : ")
         score = kernel_distance(ref_feats, np_feats)
         return score
 
@@ -506,40 +536,34 @@ def compute_kid(fdir1=None, fdir2=None, gen=None,
         # define the model if it is not specified
         model = build_feature_extractor(mode, device)
         ref_feats = get_reference_statistics(dataset_name, dataset_res,
-                            mode=mode, seed=0, split=dataset_split, metric="KID")
+                                             mode=mode, seed=0, split=dataset_split, metric="KID")
         # build resizing function based on options
         fn_resize = build_resizer(mode)
         # Generate test features
         np_feats = get_model_features(gen, model, mode=mode,
-            z_dim=z_dim, num_gen=num_gen, desc="KID model: ",
-            batch_size=batch_size, device=device)
+                                      z_dim=z_dim, num_gen=num_gen, desc="KID model: ",
+                                      batch_size=batch_size, device=device)
         score = kernel_distance(ref_feats, np_feats)
         return score
-    
+
     else:
         raise ValueError(f"invalid combination of directories and models entered")
 
 
 def compute_fid(config=None, fdir1=None, fdir2=None, gen=None, dataset=None, sigma_min=1e-3,
-            mode="clean", num_workers=12, batch_size=32,
-            device=torch.device("cuda"), dataset_name="FFHQ", assetdir='',
-            dataset_res=256, dataset_split="train", num_gen=50_000, z_dim=512):
+                mode="clean", num_workers=12, batch_size=32,
+                device=torch.device("cuda"), dataset_name="FFHQ", assetdir='',
+                dataset_res=256, dataset_split="train", num_gen=50_000, z_dim=512, dequantization=True):
     # build the feature extractor based on the mode
     feat_model = build_feature_extractor(mode, device)
 
-    if sigma_min == 1e-3:
-        print("I am working with {}".format(1e-3))
-        sampling_itrs = [0, 1280, 1640]
-    elif sigma_min == 1e-4:
-        print("I am working with {}".format(1e-4))
-        sampling_itrs = [0, 1140, 1420, 1700]
-    #sampling_itrs = [0]
+    sampling_itrs = [0]
     # if both dirs are specified, compute FID between folders
     if fdir1 is not None and fdir2 is not None:
         print("compute FID between two folders")
         score = compare_folders(fdir1, fdir2, feat_model,
-            mode=mode, batch_size=batch_size,
-            num_workers=num_workers, device=device)
+                                mode=mode, batch_size=batch_size,
+                                num_workers=num_workers, device=device)
         return score
 
     # compute fid of a folder
@@ -548,8 +572,9 @@ def compute_fid(config=None, fdir1=None, fdir2=None, gen=None, dataset=None, sig
         scores = {}
         for sampling_itr in sampling_itrs:
             score = fid_folder(fdir1, dataset, dataset_name, dataset_res, dataset_split,
-                model=feat_model, mode=mode, num_workers=num_workers,
-                batch_size=batch_size, device=device, sampling_itr=sampling_itr, assetdir=assetdir, config=config)
+                               model=feat_model, mode=mode, num_workers=num_workers,
+                               batch_size=batch_size, device=device, sampling_itr=sampling_itr, assetdir=assetdir,
+                               config=config, dequantization=True)
             scores[sampling_itr] = score
         return scores
 
@@ -557,10 +582,10 @@ def compute_fid(config=None, fdir1=None, fdir2=None, gen=None, dataset=None, sig
     elif gen is not None:
         print(f"compute FID of a model with {dataset_name}-{dataset_res} statistics")
         score = fid_model(gen, dataset_name, dataset_res, dataset_split,
-                model=feat_model, z_dim=z_dim, num_gen=num_gen,
-                mode=mode, num_workers=num_workers, batch_size=batch_size,
-                device=device)
+                          model=feat_model, z_dim=z_dim, num_gen=num_gen,
+                          mode=mode, num_workers=num_workers, batch_size=batch_size,
+                          device=device)
         return score
-    
+
     else:
         raise ValueError(f"invalid combination of directories and models entered")

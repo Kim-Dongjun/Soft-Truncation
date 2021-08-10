@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by anonymous authors of "Score Matching Model for Unbounded Data Score"
-# submitted on NeurIPS 2021 conference.
+# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
 
 """All functions related to loss computation and optimization.
 """
@@ -84,7 +83,7 @@ def get_sde_loss_fn(config, sde, train, reduce_mean=True, continuous=True, likel
       loss: A scalar that represents the average loss value across the mini-batch.
     """
     score_fn = mutils.get_score_fn(sde, model, train=train, continuous=continuous)
-    t = sde.get_random_times(threshold=config.uncsn.threshold, size=batch.shape[0], device=batch.device, t_min=eps)
+    t = sde.get_random_times(st=config.udm.st, size=batch.shape[0], device=batch.device, t_min=eps)
     z = torch.randn_like(batch)
     mean, std = sde.marginal_prob(batch, t)
     perturbed_data = mean + std[:, None, None, None] * z

@@ -13,8 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by anonymous authors of "Score Matching Model for Unbounded Data Score"
-# submitted on NeurIPS 2021 conference.
+# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
 
 # pylint: skip-file
 # pytype: skip-file
@@ -403,16 +402,6 @@ def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
       x = sde.prior_sampling(shape).to(device)
       timesteps = uniform_t(1e-5, sde, t_max=sde.T, t_min=eps, num=sde.N, device=device)
 
-      '''if isinstance(sde, sde_lib.RVESDE):
-        if sde.sigma_min == 1e-3:
-          sampling_itrs = [1280, 1640]
-        elif sde.sigma_min == 1e-4:
-          sampling_itrs = [1140, 1420, 1700]
-        else:
-          sampling_itrs = []
-      else:
-        sampling_itrs = []'''
-
       for i in tqdm(range(sde.N)):
         t = timesteps[i]
         vec_t = torch.ones(shape[0], device=t.device) * t
@@ -425,7 +414,6 @@ def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
         x, x_mean = predictor_update_fn(x, vec_t, next_vec_t, model=model)
 
 
-        #if i in sampling_itrs:
         if i % 10 == 0:
           sample_ = x_mean.detach()
           nrow = int(np.sqrt(sample_.shape[0]))
@@ -451,10 +439,7 @@ def uniform_t(final_time, sde, t_max, t_min, num, device):
     timesteps = torch.linspace(t_max, t_min, num, device=device)
   elif isinstance(sde, sde_lib.RVESDE):
     backward_t_min = 1. / t_max
-    if final_time == '0.01':
-      backward_t_max = sde.get_time()
-    else:
-      backward_t_max = 1. / t_min
+    backward_t_max = 1. / t_min
     timesteps = 1. / torch.linspace(backward_t_min, backward_t_max, num, device=device)
   else:
     raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
