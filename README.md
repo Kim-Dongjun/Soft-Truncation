@@ -49,11 +49,11 @@ Out model achieves the following performance on:
 | Experimentsal Setup | NLL (BPD) | FID | IS |
 |:----------|:-------:|:----------:|:----------:|
 | `CIFAR10` | 3.04 | 2.33 | **10.11** |
-| `ImageNet32` | **3.59** |||
-| `ImageNet64` | **3.32** |||
 | `CelebA64` | 1.93 | **2.78** ||
 | `CelebA-HQ 256` || **7.16** |
 | `STL-10 48` || **7.71** | **13.43** |
+
+* Experimental results on ImageNet32/64 were removed. Be careful on citing our results on ImageNet. See updated paper that will be released in the ArXiv soon. 
 
 ## Checkpoints
 
