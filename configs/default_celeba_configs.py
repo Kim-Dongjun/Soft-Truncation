@@ -6,19 +6,19 @@ def get_default_configs():
   config = ml_collections.ConfigDict()
   # training
   config.training = training = ml_collections.ConfigDict()
-  config.training.batch_size = 64
-  training.n_iters = 24000001
-  training.snapshot_freq = 200000
-  training.log_freq = 1000
-  training.eval_freq = 500
+  config.training.batch_size = 128
+  training.n_iters = 1300001
+  training.snapshot_freq = 50000
+  training.log_freq = 50
+  training.eval_freq = 100
   ## store additional checkpoints for preemption in cloud computing environments
-  training.snapshot_freq_for_preemption = 5000
+  training.snapshot_freq_for_preemption = 10000
   ## produce samples at each snapshot.
-  training.snapshot_sampling = False
+  training.snapshot_sampling = True
   training.likelihood_weighting = False
   training.continuous = True
   training.reduce_mean = False
-  training.importance_sampling = False
+  training.importance_sampling = True
   training.unbounded_parametrization = False
   training.ddpm_score = True
   training.st = False
@@ -36,25 +36,32 @@ def get_default_configs():
   sampling.n_steps_each = 1
   sampling.noise_removal = True
   sampling.probability_flow = False
-  sampling.snr = 0.075
-  sampling.batch_size = 16
-  sampling.truncation_time = 1e-3
+  sampling.snr = 0.17
+  sampling.batch_size = 512
+  sampling.truncation_time = 1e-5
+  sampling.sample_more = True
 
   # evaluation
   config.eval = evaluate = ml_collections.ConfigDict()
-  evaluate.begin_ckpt = 50
-  evaluate.end_ckpt = 96
-  evaluate.batch_size = 512
-  evaluate.enable_sampling = True
+  evaluate.begin_ckpt = 1
+  evaluate.end_ckpt = 26
+  evaluate.batch_size = 1024
+  evaluate.enable_sampling = False
   evaluate.num_samples = 50000
   evaluate.enable_loss = True
   evaluate.enable_bpd = False
   evaluate.bpd_dataset = 'test'
+  evaluate.num_test_data = 19962
+  evaluate.residual = True
+  evaluate.lambda_ = 0.0
+  evaluate.probability_flow = True
+  evaluate.nelbo_iter = 0
+  evaluate.nll_iter = 0
 
   # data
   config.data = data = ml_collections.ConfigDict()
-  data.dataset = 'LSUN'
-  data.image_size = 256
+  data.dataset = 'CELEBA'
+  data.image_size = 64
   data.random_flip = True
   data.dequantization = 'none'
   data.centered = False
@@ -62,12 +69,12 @@ def get_default_configs():
 
   # model
   config.model = model = ml_collections.ConfigDict()
-  model.sigma_max = 378
+  model.sigma_max = 90.
   model.sigma_min = 0.01
-  model.num_scales = 2000
+  model.num_scales = 1000
   model.beta_min = 0.1
   model.beta_max = 20.
-  model.dropout = 0.
+  model.dropout = 0.1
   model.embedding_type = 'fourier'
   model.auxiliary_resblock = True
   model.attention = True

@@ -13,16 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by anonymous authors of "Score Matching Model for Unbounded Data Score"
-# submitted on NeurIPS 2021 conference.
-
 """All functions and modules related to model definition.
 """
 
 import torch
 import sde_lib
 import numpy as np
-
+import pickle
+import torch.nn.functional as F
 
 _MODELS = {}
 
@@ -96,7 +94,6 @@ def create_model(config, sde):
   score_model = torch.nn.DataParallel(score_model)
   return score_model
 
-
 def get_model_fn(model, train=False):
   """Create a function to give the output of the score-based model.
 
@@ -128,8 +125,7 @@ def get_model_fn(model, train=False):
 
   return model_fn
 
-
-def get_score_fn(sde, model, train=False, continuous=False):
+def get_score_fn(config, sde, model, train=False, continuous=False):
   """Wraps `score_fn` so that the model output corresponds to a real time-dependent score function.
 
   Args:
@@ -144,25 +140,38 @@ def get_score_fn(sde, model, train=False, continuous=False):
   model_fn = get_model_fn(model, train=train)
 
   if isinstance(sde, sde_lib.VPSDE) or isinstance(sde, sde_lib.subVPSDE):
-    def score_fn(x, t):
+    def score_fn(x, t, logsnr_model=None, logsnr=None):
       # Scale neural network output by standard deviation and flip sign
       if continuous or isinstance(sde, sde_lib.subVPSDE):
         # For VP-trained models, t=0 corresponds to the lowest noise level
         # The maximum value of time embedding is assumed to 999 for
         # continuously-trained models.
-        labels = t * 999
+        if config.training.unbounded_parametrization:
+          labels = (sde.antiderivative(t, stabilizing_constant=config.training.stabilizing_constant) - sde.antiderivative(1e-5, stabilizing_constant=config.training.stabilizing_constant)) / \
+                   (sde.antiderivative(sde.T, stabilizing_constant=config.training.stabilizing_constant) - sde.antiderivative(1e-5, stabilizing_constant=config.training.stabilizing_constant)) * 999.
+          std = sde.marginal_prob(torch.zeros_like(x), t)[1]
+        else:
+          labels = t * 999
+          std = sde.marginal_prob(torch.zeros_like(x), t)[1]
         score = model_fn(x, labels)
-        std = sde.marginal_prob(torch.zeros_like(x), t)[1]
+
       else:
         # For VP-trained models, t=0 corresponds to the lowest noise level
         labels = t * (sde.N - 1)
         score = model_fn(x, labels)
         std = sde.sqrt_1m_alphas_cumprod.to(labels.device)[labels.long()]
 
-      score = -score / std[:, None, None, None]
+      #temp_losses = torch.sum(torch.square(score).reshape(score.shape[0], -1), dim=-1)
+      #with open('/home/aailab/dongjoun57/FifthArticleExperimentalResults_st/IMAGENET32/VP/score_loss/loss_' + str(
+      #        np.random.randint(100000)) + '.pickle', 'wb') as f:
+      #  pickle.dump({'loss': temp_losses, 'time': t}, f)
+
+      if config.training.ddpm_score:
+        score = - score / std[:, None, None, None]
+
       return score
 
-  elif isinstance(sde, sde_lib.VESDE) or isinstance(sde, sde_lib.RVESDE):
+  elif isinstance(sde, sde_lib.VESDE) or isinstance(sde, sde_lib.reciprocal_VESDE):
     def score_fn(x, t):
       if continuous:
         labels = sde.marginal_prob(torch.zeros_like(x), t)[1]

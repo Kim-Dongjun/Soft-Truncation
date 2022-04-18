@@ -13,9 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by anonymous authors of "Score Matching Model for Unbounded Data Score"
-# submitted on NeurIPS 2021 conference.
-
 # pylint: skip-file
 """Layers for defining NCSN++.
 """
@@ -31,6 +28,19 @@ conv3x3 = layers.ddpm_conv3x3
 NIN = layers.NIN
 default_init = layers.default_init
 
+class FixedFouriereProjection(nn.Module):
+  """Fixed Fourier embeddings for input data."""
+
+  def __init__(self):
+    super().__init__()
+
+  def forward(self, x):
+    fourier_sin_1 = torch.sin(x * 128 * np.pi)
+    fourier_cos_1 = torch.cos(x * 128 * np.pi)
+    fourier_sin_2 = torch.sin(x * 256 * np.pi)
+    fourier_cos_2 = torch.cos(x * 256 * np.pi)
+    x = torch.cat((x, fourier_sin_1, fourier_cos_1, fourier_sin_2, fourier_cos_2), dim=1)
+    return x
 
 class GaussianFourierProjection(nn.Module):
   """Gaussian Fourier embeddings for noise levels."""
