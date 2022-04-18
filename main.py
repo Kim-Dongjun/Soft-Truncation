@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
-
 """Training and evaluation"""
 
 import torch
@@ -32,7 +30,7 @@ config_flags.DEFINE_config_file(
   "config", None, "Training configuration.", lock_config=True)
 flags.DEFINE_string("workdir", None, "Work directory.")
 flags.DEFINE_enum("mode", None, ["train", "eval"], "Running mode: train or eval")
-flags.DEFINE_string("assetdir", os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) +
+flags.DEFINE_string("assetdir", os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))) +
                     "/assets/stats/", "The folder name for storing evaluation results")
 flags.DEFINE_string("eval_folder", "eval",
                     "The folder name for storing evaluation results")
@@ -40,6 +38,16 @@ flags.mark_flags_as_required(["workdir", "config", "mode"])
 
 
 def main(argv):
+  tf.io.gfile.makedirs(FLAGS.workdir)
+  with open(os.path.join(FLAGS.workdir, 'config.txt'), 'w') as f:
+    # f.write(str(FLAGS.config.to_dict()))
+    for k, v in FLAGS.config.to_dict().items():
+      f.write(str(k) + '\n')
+      print(type(v))
+      if type(v) == dict:
+        for k2, v2 in v.items():
+          f.write('> ' + str(k2) + ': ' + str(v2) + '\n')
+      f.write('\n\n')
   if FLAGS.mode == "train":
     # Create the working directory
     tf.io.gfile.makedirs(FLAGS.workdir)
@@ -56,14 +64,15 @@ def main(argv):
     logger.addHandler(handler)
     logger.setLevel('INFO')
     # Run the training pipeline
-    run_lib.train(FLAGS.config, FLAGS.workdir)
+    run_lib.train(FLAGS.config, FLAGS.workdir, FLAGS.assetdir)
   elif FLAGS.mode == "eval":
     eval_dir = os.path.join(FLAGS.workdir, FLAGS.eval_folder)
     tf.io.gfile.makedirs(eval_dir)
-    if os.path.exists(os.path.join(FLAGS.workdir, 'evaluation_history.txt')):
-      gfile_stream = open(os.path.join(FLAGS.workdir, 'evaluation_history.txt'), 'a')
+    stdout_name = 'evaluation_history'
+    if os.path.exists(os.path.join(FLAGS.workdir, f'{stdout_name}.txt')):
+      gfile_stream = open(os.path.join(FLAGS.workdir, f'{stdout_name}.txt'), 'a')
     else:
-      gfile_stream = open(os.path.join(FLAGS.workdir, 'evaluation_history.txt'), 'w')
+      gfile_stream = open(os.path.join(FLAGS.workdir, f'{stdout_name}.txt'), 'w')
     handler = logging.StreamHandler(gfile_stream)
     formatter = logging.Formatter('%(levelname)s - %(filename)s - %(asctime)s - %(message)s')
     handler.setFormatter(formatter)

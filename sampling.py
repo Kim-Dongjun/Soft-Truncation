@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
-
 # pylint: skip-file
 # pytype: skip-file
 """Various sampling methods."""
@@ -24,9 +22,6 @@ import torch
 import numpy as np
 import abc
 
-from torchvision.utils import make_grid, save_image
-import tensorflow as tf
-import os, io
 from models.utils import from_flattened_numpy, to_flattened_numpy, get_score_fn
 from scipy import integrate
 import sde_lib
@@ -82,7 +77,7 @@ def get_corrector(name):
   return _CORRECTORS[name]
 
 
-def get_sampling_fn(config, sde, shape, inverse_scaler, eps, sample_dir=''):
+def get_sampling_fn(config, sde, shape, inverse_scaler, eps):
   """Create a sampling function.
 
   Args:
@@ -100,12 +95,19 @@ def get_sampling_fn(config, sde, shape, inverse_scaler, eps, sample_dir=''):
   sampler_name = config.sampling.method
   # Probability flow ODE sampling with black-box ODE solvers
   if sampler_name.lower() == 'ode':
-    raise NotImplementedError
+    sampling_fn = get_ode_sampler(config=config,
+                                  sde=sde,
+                                  shape=shape,
+                                  inverse_scaler=inverse_scaler,
+                                  denoise=config.sampling.noise_removal,
+                                  eps=eps,
+                                  device=config.device)
   # Predictor-Corrector sampling. Predictor-only and Corrector-only samplers are special cases.
   elif sampler_name.lower() == 'pc':
     predictor = get_predictor(config.sampling.predictor.lower())
     corrector = get_corrector(config.sampling.corrector.lower())
-    sampling_fn = get_pc_sampler(sde=sde,
+    sampling_fn = get_pc_sampler(config=config,
+                                 sde=sde,
                                  shape=shape,
                                  predictor=predictor,
                                  corrector=corrector,
@@ -116,8 +118,7 @@ def get_sampling_fn(config, sde, shape, inverse_scaler, eps, sample_dir=''):
                                  continuous=config.training.continuous,
                                  denoise=config.sampling.noise_removal,
                                  eps=eps,
-                                 device=config.device,
-                                 sample_dir=sample_dir)
+                                 device=config.device)
   else:
     raise ValueError(f"Sampler name {sampler_name} unknown.")
 
@@ -127,15 +128,22 @@ def get_sampling_fn(config, sde, shape, inverse_scaler, eps, sample_dir=''):
 class Predictor(abc.ABC):
   """The abstract class for a predictor algorithm."""
 
-  def __init__(self, sde, score_fn, probability_flow=False):
+  def __init__(self, sde, score_fn, probability_flow=False, logsnr_model=None):
     super().__init__()
     self.sde = sde
     # Compute the reverse SDE/ODE
-    self.rsde = sde.reverse(score_fn, probability_flow)
+    if logsnr_model == None:
+      if probability_flow:
+        lambda_ = 0.
+      else:
+        lambda_ = 1.
+      self.rsde = sde.reverse(score_fn, probability_flow, lambda_=lambda_)
+    else:
+      self.rsde = sde.reverse(score_fn, logsnr_model, probability_flow)
     self.score_fn = score_fn
 
   @abc.abstractmethod
-  def update_fn(self, x, t, next_t):
+  def update_fn(self, x, t, next_t=None):
     """One update of the predictor.
 
     Args:
@@ -160,7 +168,7 @@ class Corrector(abc.ABC):
     self.n_steps = n_steps
 
   @abc.abstractmethod
-  def update_fn(self, x, t, next_t):
+  def update_fn(self, x, t):
     """One update of the corrector.
 
     Args:
@@ -176,12 +184,11 @@ class Corrector(abc.ABC):
 
 @register_predictor(name='euler_maruyama')
 class EulerMaruyamaPredictor(Predictor):
-  def __init__(self, sde, score_fn, probability_flow=False):
+  def __init__(self, config, sde, score_fn, probability_flow=False):
     super().__init__(sde, score_fn, probability_flow)
 
-  def update_fn(self, x, t, next_t):
-    #dt = -1. / self.rsde.N
-    dt = (next_t - t)[0].item()
+  def update_fn(self, x, t):
+    dt = -1. / self.rsde.N
     z = torch.randn_like(x)
     drift, diffusion = self.rsde.sde(x, t)
     x_mean = x + drift * dt
@@ -191,10 +198,11 @@ class EulerMaruyamaPredictor(Predictor):
 
 @register_predictor(name='reverse_diffusion')
 class ReverseDiffusionPredictor(Predictor):
-  def __init__(self, sde, score_fn, probability_flow=False):
-    super().__init__(sde, score_fn, probability_flow)
+  def __init__(self, config, sde, score_fn, probability_flow=False, logsnr_model=None):
+    super().__init__(sde, score_fn, probability_flow, logsnr_model)
+    self.config = config
 
-  def update_fn(self, x, t, next_t):
+  def update_fn(self, x, t, next_t=None):
     f, G = self.rsde.discretize(x, t, next_t)
     z = torch.randn_like(x)
     x_mean = x - f
@@ -206,19 +214,17 @@ class ReverseDiffusionPredictor(Predictor):
 class AncestralSamplingPredictor(Predictor):
   """The ancestral sampling predictor. Currently only supports VE/VP SDEs."""
 
-  def __init__(self, sde, score_fn, probability_flow=False):
+  def __init__(self, config, sde, score_fn, probability_flow=False):
     super().__init__(sde, score_fn, probability_flow)
-    if not isinstance(sde, sde_lib.VESDE):
+    if not isinstance(sde, sde_lib.VPSDE) and not isinstance(sde, sde_lib.VESDE):
       raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
     assert not probability_flow, "Probability flow not supported by ancestral sampling"
 
-  def vesde_update_fn(self, x, t, next_t):
-    #sde = self.sde
-    #timestep = (t * (sde.N - 1) / sde.T).long()
-    #sigma = sde.discrete_sigmas[timestep]
-    #adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t), sde.discrete_sigmas.to(t.device)[timestep - 1])
-    sigma = self.sde.marginal_prob(x, t)[1]
-    adjacent_sigma = self.sde.marginal_prob(x, next_t)[1]
+  def vesde_update_fn(self, x, t):
+    sde = self.sde
+    timestep = (t * (sde.N - 1) / sde.T).long()
+    sigma = sde.discrete_sigmas[timestep]
+    adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t), sde.discrete_sigmas.to(t.device)[timestep - 1])
     score = self.score_fn(x, t)
     x_mean = x + score * (sigma ** 2 - adjacent_sigma ** 2)[:, None, None, None]
     std = torch.sqrt((adjacent_sigma ** 2 * (sigma ** 2 - adjacent_sigma ** 2)) / (sigma ** 2))
@@ -236,9 +242,9 @@ class AncestralSamplingPredictor(Predictor):
     x = x_mean + torch.sqrt(beta)[:, None, None, None] * noise
     return x, x_mean
 
-  def update_fn(self, x, t, next_t):
-    if isinstance(self.sde, sde_lib.VESDE) or isinstance(self.sde, sde_lib.RVESDE):
-      return self.vesde_update_fn(x, t, next_t)
+  def update_fn(self, x, t):
+    if isinstance(self.sde, sde_lib.VESDE):
+      return self.vesde_update_fn(x, t)
     elif isinstance(self.sde, sde_lib.VPSDE):
       return self.vpsde_update_fn(x, t)
 
@@ -250,7 +256,7 @@ class NonePredictor(Predictor):
   def __init__(self, sde, score_fn, probability_flow=False):
     pass
 
-  def update_fn(self, x, t, next_t):
+  def update_fn(self, x, t):
     return x, x
 
 
@@ -258,11 +264,12 @@ class NonePredictor(Predictor):
 class LangevinCorrector(Corrector):
   def __init__(self, sde, score_fn, snr, n_steps):
     super().__init__(sde, score_fn, snr, n_steps)
-    if not isinstance(sde, sde_lib.VESDE) \
-        and not isinstance(sde, sde_lib.RVESDE):
+    if not isinstance(sde, sde_lib.VPSDE) \
+        and not isinstance(sde, sde_lib.VESDE) \
+        and not isinstance(sde, sde_lib.subVPSDE):
       raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
 
-  def update_fn(self, x, t, next_t):
+  def update_fn(self, x, t):
     sde = self.sde
     score_fn = self.score_fn
     n_steps = self.n_steps
@@ -294,11 +301,12 @@ class AnnealedLangevinDynamics(Corrector):
 
   def __init__(self, sde, score_fn, snr, n_steps):
     super().__init__(sde, score_fn, snr, n_steps)
-    if not isinstance(sde, sde_lib.VESDE) \
-        and not isinstance(sde, sde_lib.RVESDE):
+    if not isinstance(sde, sde_lib.VPSDE) \
+        and not isinstance(sde, sde_lib.VESDE) \
+        and not isinstance(sde, sde_lib.subVPSDE):
       raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
 
-  def update_fn(self, x, t, next_t):
+  def update_fn(self, x, t):
     sde = self.sde
     score_fn = self.score_fn
     n_steps = self.n_steps
@@ -328,35 +336,35 @@ class NoneCorrector(Corrector):
   def __init__(self, sde, score_fn, snr, n_steps):
     pass
 
-  def update_fn(self, x, t, next_t):
+  def update_fn(self, x, t):
     return x, x
 
 
-def shared_predictor_update_fn(x, t, next_t, sde, model, predictor, probability_flow, continuous):
+def shared_predictor_update_fn(x, t, sde, model, predictor, probability_flow, continuous, config):
   """A wrapper that configures and returns the update function of predictors."""
-  score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous)
+  score_fn = mutils.get_score_fn(config, sde, model, train=False, continuous=continuous)
   if predictor is None:
     # Corrector-only sampler
     predictor_obj = NonePredictor(sde, score_fn, probability_flow)
   else:
-    predictor_obj = predictor(sde, score_fn, probability_flow)
-  return predictor_obj.update_fn(x, t, next_t)
+    predictor_obj = predictor(config, sde, score_fn, probability_flow)
+  return predictor_obj.update_fn(x, t)
 
 
-def shared_corrector_update_fn(x, t, next_t, sde, model, corrector, continuous, snr, n_steps):
+def shared_corrector_update_fn(x, t, sde, model, corrector, continuous, snr, n_steps, config):
   """A wrapper tha configures and returns the update function of correctors."""
-  score_fn = mutils.get_score_fn(sde, model, train=False, continuous=continuous)
+  score_fn = mutils.get_score_fn(config, sde, model, train=False, continuous=continuous)
   if corrector is None:
     # Predictor-only sampler
     corrector_obj = NoneCorrector(sde, score_fn, snr, n_steps)
   else:
     corrector_obj = corrector(sde, score_fn, snr, n_steps)
-  return corrector_obj.update_fn(x, t, next_t)
+  return corrector_obj.update_fn(x, t)
 
 
-def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
+def get_pc_sampler(config, sde, shape, predictor, corrector, inverse_scaler, snr,
                    n_steps=1, probability_flow=False, continuous=False,
-                   denoise=True, eps=1e-3, device='cuda', sample_dir=''):
+                   denoise=True, eps=1e-3, device='cuda'):
   """Create a Predictor-Corrector (PC) sampler.
 
   Args:
@@ -381,15 +389,25 @@ def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
                                           sde=sde,
                                           predictor=predictor,
                                           probability_flow=probability_flow,
-                                          continuous=continuous)
+                                          continuous=continuous,
+                                          config=config)
   corrector_update_fn = functools.partial(shared_corrector_update_fn,
                                           sde=sde,
                                           corrector=corrector,
                                           continuous=continuous,
                                           snr=snr,
-                                          n_steps=n_steps)
+                                          n_steps=n_steps,
+                                          config=config)
 
-  def pc_sampler(model, r):
+  def denoise_update_fn(model, x):
+    score_fn = get_score_fn(config, sde, model, train=False, continuous=True)
+    # Reverse diffusion predictor for denoising
+    predictor_obj = ReverseDiffusionPredictor(config, sde, score_fn, probability_flow=True)
+    vec_eps = torch.ones(x.shape[0], device=x.device) * sde.eps
+    _, x = predictor_obj.update_fn(x, vec_eps, torch.zeros_like(vec_eps))
+    return x
+
+  def pc_sampler(model):
     """ The PC sampler funciton.
 
     Args:
@@ -400,47 +418,87 @@ def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
     with torch.no_grad():
       # Initial sample
       x = sde.prior_sampling(shape).to(device)
-      timesteps = uniform_t(1e-5, sde, t_max=sde.T, t_min=eps, num=sde.N, device=device)
+      timesteps = torch.linspace(sde.T, eps, sde.N, device=device)
 
       for i in tqdm(range(sde.N)):
         t = timesteps[i]
         vec_t = torch.ones(shape[0], device=t.device) * t
-        if i < sde.N - 1:
-          next_t = timesteps[i+1]
-        else:
-          next_t = torch.zeros_like(t)
-        next_vec_t = torch.ones(shape[0], device=next_t.device) * next_t
-        x, x_mean = corrector_update_fn(x, vec_t, next_vec_t, model=model)
-        x, x_mean = predictor_update_fn(x, vec_t, next_vec_t, model=model)
+        x, x_mean = corrector_update_fn(x, vec_t, model=model)
+        x, x_mean = predictor_update_fn(x, vec_t, model=model)
 
-
-        if i % 10 == 0:
-          sample_ = x_mean.detach()
-          nrow = int(np.sqrt(sample_.shape[0]))
-          image_grid = make_grid(sample_, nrow, padding=2)
-          with tf.io.gfile.GFile(
-                  os.path.join(sample_dir, f"samples_{r}_intermediate_{i}_{t.item()}.png"), "wb") as fout:
-            save_image(image_grid, fout)
-          samples = np.clip(sample_.permute(0, 2, 3, 1).cpu().numpy() * 255., 0, 255).astype(np.uint8)
-          samples = samples.reshape(shape)
-          # Write samples to disk or Google Cloud Storage
-          with tf.io.gfile.GFile(
-                  os.path.join(sample_dir, f"samples_{r}_intermediate_{i}_{t.item()}.npz"), "wb") as fout:
-            io_buffer = io.BytesIO()
-            np.savez_compressed(io_buffer, samples=samples)
-            fout.write(io_buffer.getvalue())
+      x_mean = x = denoise_update_fn(model, x_mean if denoise else x)
 
       return inverse_scaler(x_mean if denoise else x), sde.N * (n_steps + 1)
 
   return pc_sampler
 
-def uniform_t(final_time, sde, t_max, t_min, num, device):
-  if isinstance(sde, sde_lib.VESDE):
-    timesteps = torch.linspace(t_max, t_min, num, device=device)
-  elif isinstance(sde, sde_lib.RVESDE):
-    backward_t_min = 1. / t_max
-    backward_t_max = 1. / t_min
-    timesteps = 1. / torch.linspace(backward_t_min, backward_t_max, num, device=device)
-  else:
-    raise NotImplementedError(f"SDE class {sde.__class__.__name__} not yet supported.")
-  return timesteps
+
+def get_ode_sampler(config, sde, shape, inverse_scaler,
+                    denoise=False, rtol=1e-5, atol=1e-5,
+                    method='RK45', eps=1e-3, device='cuda'):
+  """Probability flow ODE sampler with the black-box ODE solver.
+
+  Args:
+    sde: An `sde_lib.SDE` object that represents the forward SDE.
+    shape: A sequence of integers. The expected shape of a single sample.
+    inverse_scaler: The inverse data normalizer.
+    denoise: If `True`, add one-step denoising to final samples.
+    rtol: A `float` number. The relative tolerance level of the ODE solver.
+    atol: A `float` number. The absolute tolerance level of the ODE solver.
+    method: A `str`. The algorithm used for the black-box ODE solver.
+      See the documentation of `scipy.integrate.solve_ivp`.
+    eps: A `float` number. The reverse-time SDE/ODE will be integrated to `eps` for numerical stability.
+    device: PyTorch device.
+
+  Returns:
+    A sampling function that returns samples and the number of function evaluations during sampling.
+  """
+
+  def denoise_update_fn(model, x):
+    score_fn = get_score_fn(config, sde, model, train=False, continuous=True)
+    # Reverse diffusion predictor for denoising
+    predictor_obj = ReverseDiffusionPredictor(config, sde, score_fn, probability_flow=False)
+    vec_eps = torch.ones(x.shape[0], device=x.device) * sde.eps
+    _, x = predictor_obj.update_fn(x, vec_eps, torch.zeros_like(vec_eps))
+    return x
+
+  def drift_fn(model, x, t):
+    """Get the drift function of the reverse-time SDE."""
+    score_fn = get_score_fn(config, sde, model, train=False, continuous=True)
+    rsde = sde.reverse(score_fn, probability_flow=True, lambda_=0.)
+    return rsde.sde(x, t)[0]
+
+  def ode_sampler(model):
+    """The probability flow ODE sampler with black-box ODE solver.
+
+    Args:
+      model: A score model.
+      z: If present, generate samples from latent code `z`.
+    Returns:
+      samples, number of function evaluations.
+    """
+    with torch.no_grad():
+      # Initial sample
+      x = sde.prior_sampling(shape).to(device)
+      #x = x[0].repeat(x.shape[0],1,1,1)
+      #x = x + 0.5 * torch.randn_like(x)
+      def ode_func(t, x):
+        x = from_flattened_numpy(x, shape).to(device).type(torch.float32)
+        vec_t = torch.ones(shape[0], device=x.device) * t
+        drift = drift_fn(model, x, vec_t)
+        return to_flattened_numpy(drift)
+
+      # Black-box ODE solver for the probability flow ODE
+      solution = integrate.solve_ivp(ode_func, (sde.T, eps), to_flattened_numpy(x),
+                                     rtol=rtol, atol=atol, method=method)
+      nfe = solution.nfev
+      x = torch.tensor(solution.y[:, -1]).reshape(shape).to(device).type(torch.float32)
+
+      # Denoising is equivalent to running one predictor step without adding noise
+      if denoise:
+        x = denoise_update_fn(model, x)
+
+      x = inverse_scaler(x)
+      return x, nfe
+
+  return ode_sampler

@@ -13,103 +13,56 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
-
 """Utility functions for computing FID/Inception scores."""
 
 import logging
 import os
 import io
-import gc
 import torch
 import numpy as np
-import tensorflow as tf
-import tensorflow_gan as tfgan
-from scipy import linalg
-
+import gc
 import evaluation
-from save import create_name
-from cleanfid import fid as fid_calculator
+import utils
+import tensorflow as tf
+from torchvision.utils import make_grid, save_image
 
-def get_losses(config, eval_ds, scaler, eval_step, state):
-    all_losses = []
-    eval_iter = iter(eval_ds)  # pytype: disable=wrong-arg-types
-    for i, batch in enumerate(eval_iter):
-        eval_batch = torch.from_numpy(batch['image']._numpy()).to(config.device).float()
-        eval_batch = eval_batch.permute(0, 3, 1, 2)
-        eval_batch = scaler(eval_batch)
-        eval_loss = eval_step(state, eval_batch)
-        all_losses.append(eval_loss.item())
-        if (i + 1) % 1000 == 0:
-            logging.info("Finished %dth step loss evaluation" % (i + 1))
-    return all_losses
+def get_dir_name(config, sample_dir, step):
+    if config.sampling.method == 'pc':
+        dir_name = os.path.join(sample_dir, f"iter_{step}_{config.sampling.truncation_time}_{config.sampling.noise_removal}_{config.sampling.predictor}_{config.sampling.corrector}_{config.sampling.snr}")
+    else:
+        dir_name = os.path.join(sample_dir, f"iter_{step}_{config.sampling.truncation_time}_{config.sampling.noise_removal}")
+    return dir_name
 
-def get_samples_manual(config, score_model, sampling_fn, name, sample_dir):
-    if len(name.split('.')) == 1:
-        name = name + '.npz'
-    #logging.info("sampling -- ckpt: %d, round: %d" % (ckpt, r))
-    #if name == 'sample.npz':
-    #    if os.path.exists(os.path.join(sample_dir, 'sample.np')):
-    #        samples = np.load(os.path.join(sample_dir, 'sample.np'))
-    #        with tf.io.gfile.GFile(
-    #                os.path.join(sample_dir, "sample.npz"), "wb") as fout:
-    #            np.save(fout, samples)
-    #elif name == 'sample.np':
-    #    samples = np.load(os.path.join(sample_dir, 'sample.np'))
-    #    with tf.io.gfile.GFile(
-    #            os.path.join(sample_dir, "sample.npz"), "wb") as fout:
-    #        np.save(fout, samples)
-    if not os.path.exists(os.path.join(sample_dir, name)):
-        print("sampling start ...")
-        # Directory to save samples. Different for each host to avoid writing conflicts
-        tf.io.gfile.makedirs(sample_dir)
+def get_samples(config, score_model, state, sampling_fn, step, r, sample_dir):
+    logging.info("sampling -- ckpt step: %d, round: %d" % (step, r))
+    dir_name = get_dir_name(config, sample_dir, step)
+    tf.io.gfile.makedirs(dir_name)
+    if not os.path.exists(os.path.join(dir_name, f'samples_{r}.npz')):
         samples, n = sampling_fn(score_model)
         samples = np.clip(samples.permute(0, 2, 3, 1).cpu().numpy() * 255., 0, 255).astype(np.uint8)
-        samples = samples.reshape(
-            (-1, config.data.image_size, config.data.image_size, config.data.num_channels))
+        samples = samples.reshape((-1, config.data.image_size, config.data.image_size, config.data.num_channels))
         # Write samples to disk or Google Cloud Storage
         with tf.io.gfile.GFile(
-                os.path.join(sample_dir, name), "wb") as fout:
+                os.path.join(dir_name, f"samples_{r}.npz"), "wb") as fout:
             io_buffer = io.BytesIO()
             np.savez_compressed(io_buffer, samples=samples)
             fout.write(io_buffer.getvalue())
-    else:
-        try:
-            samples = np.load(os.path.join(sample_dir, name))['samples']
-            samples = samples[np.random.choice(samples.shape[0], 1000, replace=False)]
-        except:
-            try:
-                samples = np.load(os.path.join(sample_dir, name))['sample']
-                samples = samples[np.random.choice(samples.shape[0], 1000, replace=False)]
-            except:
-                samples = np.load(os.path.join(sample_dir, name))#['samples']
-                samples = samples[np.random.choice(samples.shape[0], 1000, replace=False)]
-    return samples
-
-def get_samples(config, score_model, sampling_fn, ckpt, r, sample_dir):
-    logging.info("sampling -- ckpt: %d, round: %d" % (ckpt, r))
-    if not os.path.exists(os.path.join(sample_dir, f'samples_{r}.npz')):
-        # Directory to save samples. Different for each host to avoid writing conflicts
-        tf.io.gfile.makedirs(sample_dir)
-        samples, n = sampling_fn(score_model, r)
-        samples = np.clip(samples.permute(0, 2, 3, 1).cpu().numpy() * 255., 0, 255).astype(np.uint8)
-        samples = samples.reshape(
-            (-1, config.data.image_size, config.data.image_size, config.data.num_channels))
-        # Write samples to disk or Google Cloud Storage
+        nrow = int(np.sqrt(samples.shape[0]))
+        image_grid = make_grid(torch.tensor(samples).permute(0, 3, 1, 2) / 255., nrow, padding=2)
         with tf.io.gfile.GFile(
-                os.path.join(sample_dir, f"samples_{r}.npz"), "wb") as fout:
-            io_buffer = io.BytesIO()
-            np.savez_compressed(io_buffer, samples=samples)
-            fout.write(io_buffer.getvalue())
+                os.path.join(dir_name, f"sample_{r}.png"), "wb") as fout:
+            save_image(image_grid, fout)
     else:
-        samples = np.load(os.path.join(sample_dir, f"samples_{r}.npz"))['samples']
+        samples = np.load(os.path.join(dir_name, f"samples_{r}.npz"))['samples']
     return samples
 
-def get_latent(samples, inception_model, inceptionv3, saving_dir, name, small_batch=128):
+def get_latents(config, samples, inception_model, inceptionv3, step, r, sample_dir, small_batch=128):
     latents = {}
     num = (samples.shape[0] - 1) // small_batch + 1
-    name = create_name('statistics', name, 'npz')
-    if not os.path.exists(os.path.join(saving_dir, name)):
+    name = utils.create_name('statistics', r, 'npz')
+    dir_name = get_dir_name(config, sample_dir, step)
+    # samples = torch.tensor(samples, device=inception_model.device)
+    if not os.path.exists(os.path.join(dir_name, name)):
         for k in range(num):
             # Force garbage collection before calling TensorFlow code for Inception network
             gc.collect()
@@ -118,174 +71,30 @@ def get_latent(samples, inception_model, inceptionv3, saving_dir, name, small_ba
                                                                 inceptionv3=inceptionv3)
             if k == 0:
                 latents['pool_3'] = latents_temp['pool_3']
-                latents['logits'] = latents_temp['logits']
+                if not inceptionv3:
+                    latents['logits'] = latents_temp['logits']
             else:
                 latents['pool_3'] = tf.concat([latents['pool_3'], latents_temp['pool_3']], 0)
-                latents['logits'] = tf.concat([latents['logits'], latents_temp['logits']], 0)
+                if not inceptionv3:
+                    latents['logits'] = tf.concat([latents['logits'], latents_temp['logits']], 0)
             # Force garbage collection again before returning to JAX code
             gc.collect()
     else:
         latents = ''
     return latents
 
-def compute_fid_and_is(config, assetdir, inceptionv3, ckpt, dataset, name='/0', sample_dir='', latents=''):
-    if config.data.dataset == 'CIFAR10':
-        compute_fid_and_is_cifar10(config, assetdir, inceptionv3, ckpt, name=name, sample_dir=sample_dir, latents=latents)
-    elif config.data.dataset in ['FFHQ', 'LSUN', 'CelebAHQ', 'CELEBA', 'STL10']:
-        compute_fid(config, assetdir, inceptionv3, ckpt, dataset, name=name, sample_dir=sample_dir, latents=latents)
-        if config.data.dataset == 'STL10':
-            compute_is_stl10(config, inceptionv3, ckpt, name=name, sample_dir=sample_dir, latents=latents)
-    else:
-        raise NotImplementedError
-
-def compute_fid(config, assetdir, inceptionv3, ckpt, dataset, name='/0', sample_dir='', latents=''):
-    fids = fid_calculator.compute_fid(config=config, mode='clean', fdir1=sample_dir, dataset_name=config.data.dataset, assetdir=assetdir, dataset=dataset, dequantization=True)
-    print(fids)
-    logging.info(f"{sample_dir}_ckpt-%d_{name} --- FID: {fids}" % (ckpt))
-
-    if len(name.split('.')) == 1:
-        name = f'report_{name}.npz'
-    else:
-        name = f'report_{name.split(".")[0]}.npz'
-    if not os.path.join(sample_dir, name):
-        with tf.io.gfile.GFile(os.path.join(sample_dir, name),
-                               "wb") as f:
+def save_statistics(config, latents, inceptionv3, step, r, sample_dir):
+    name = utils.create_name('statistics', r, 'npz')
+    dir_name = get_dir_name(config, sample_dir, step)
+    if not os.path.exists(os.path.join(dir_name, name)):
+        # Save latent represents of the Inception network to disk or Google Cloud Storage
+        with tf.io.gfile.GFile(
+                os.path.join(dir_name, name), "wb") as fout:
             io_buffer = io.BytesIO()
-            np.savez_compressed(io_buffer, fids=fids)
-            f.write(io_buffer.getvalue())
-
-def compute_is_stl10(config, inceptionv3, ckpt, name='/0', sample_dir='', latents=''):
-    all_logits = []
-    all_pools = []
-    if latents == '':
-        stats = tf.io.gfile.glob(os.path.join(sample_dir, "statistics_*.npz"))
-        for stat_file in stats:
-            with tf.io.gfile.GFile(stat_file, "rb") as fin:
-                stat = np.load(fin)
-                print("stat : ", stat)
-                if not inceptionv3:
-                    all_logits.append(stat["logits"])
-                all_pools.append(stat["pool_3"])
-    else:
-        if not inceptionv3:
-            all_logits.append(latents["logits"])
-        all_pools.append(latents["pool_3"])
-    if not inceptionv3:
-        all_logits = np.concatenate(all_logits, axis=0)[:config.eval.num_samples]
-    all_pools = np.concatenate(all_pools, axis=0)[:config.eval.num_samples]
-
-    all_use = False
-    if all_use:
-        inception_score = calculate_inception_score_CDM(config, all_logits, inceptionv3)
-    else:
-        inception_score = calculate_inception_score_styleGAN(all_logits, inceptionv3, ckpt, name, sample_dir)
-
-
-    logging.info(f'Inception score: {np.mean(inception_score)}')
-    if len(name.split('.')) == 1:
-        name = f'report_{name}.npz'
-    else:
-        name = f'report_{name.split(".")[0]}.npz'
-    if not os.path.join(sample_dir, name):
-        with tf.io.gfile.GFile(os.path.join(sample_dir, name),
-                               "wb") as f:
-            io_buffer = io.BytesIO()
-            np.savez_compressed(io_buffer, IS=inception_score)
-            f.write(io_buffer.getvalue())
-
-def compute_fid_and_is_cifar10(config, assetdir, inceptionv3, ckpt, name='/0', sample_dir='', latents=''):
-    # Compute inception scores, FIDs and KIDs.
-    # Load all statistics that have been previously computed and saved for each host
-    all_logits = []
-    all_pools = []
-    if latents == '':
-        stats = tf.io.gfile.glob(os.path.join(sample_dir, "statistics_*.npz"))
-        for stat_file in stats:
-            with tf.io.gfile.GFile(stat_file, "rb") as fin:
-                stat = np.load(fin)
-                print("stat : ", stat)
-                if not inceptionv3:
-                    all_logits.append(stat["logits"])
-                all_pools.append(stat["pool_3"])
-    else:
-        if not inceptionv3:
-            all_logits.append(latents["logits"])
-        all_pools.append(latents["pool_3"])
-
-    if not inceptionv3:
-        all_logits = np.concatenate(all_logits, axis=0)[:config.eval.num_samples]
-    all_pools = np.concatenate(all_pools, axis=0)[:config.eval.num_samples]
-
-    # Load pre-computed dataset statistics.
-    data_stats = evaluation.load_dataset_stats(config, assetdir)
-    data_pools = data_stats["pool_3"]
-
-    all_use = False
-    if all_use:
-        inception_score = calculate_inception_score_CDM(config, all_logits, inceptionv3)
-    else:
-        inception_score = calculate_inception_score_styleGAN(all_logits, inceptionv3, ckpt, name, sample_dir)
-
-    fid = tfgan.eval.frechet_classifier_distance_from_activations(
-        data_pools, all_pools)
-    # Hack to get tfgan KID work for eager execution.
-    tf_data_pools = tf.convert_to_tensor(data_pools)
-    tf_all_pools = tf.convert_to_tensor(all_pools)
-    kid = tfgan.eval.kernel_classifier_distance_from_activations(
-        tf_data_pools, tf_all_pools).numpy()
-    del tf_data_pools, tf_all_pools
-    name = name.split('/')[-1]
-
-    logging.info(
-        f"{sample_dir}_ckpt-%d_{name} --- inception_score: %.6e, FID: %.6e, KID: %.6e" % (
-            ckpt, np.mean(inception_score), fid, kid))
-
-    if len(name.split('.')) == 1:
-        name = f'report_{name}.npz'
-    else:
-
-        name = f'report_{name.split(".")[0]}.npz'
-    if not os.path.join(sample_dir, name):
-        with tf.io.gfile.GFile(os.path.join(sample_dir, name),
-                               "wb") as f:
-            io_buffer = io.BytesIO()
-            np.savez_compressed(io_buffer, IS=inception_score, fid=fid, kid=kid)
-            f.write(io_buffer.getvalue())
-
-
-def calculate_inception_score_styleGAN(all_logits, inceptionv3, ckpt, name, sample_dir):
-    inception_scores = []
-    for k in range(10):
-        # indices = np.arange(k * 5000,(k+1) * 5000)
-
-        if not inceptionv3:
-            all_logit = all_logits[k * 5000: (k + 1) * 5000]
-
-        print("all logits length : ", len(all_logit))
-        assert len(all_logit) == 5000
-
-        # Compute FID/KID/IS on all samples together.
-        if not inceptionv3:
-            inception_score = tfgan.eval.classifier_score_from_logits(all_logit)
-            inception_scores.append(inception_score)
-        else:
-            inception_score = -1
-
-        logging.info(
-            f"{sample_dir}_ckpt-%d_{name} --- inception_score: %.6e" % (
-                ckpt, inception_score))
-
-    return inception_scores
-
-def calculate_inception_score_CDM(config, all_logits, inceptionv3):
-
-    print("all logits length : ", len(all_logits))
-    assert len(all_logits) == config.eval.num_samples
-
-    # Compute FID/KID/IS on all samples together.
-    if not inceptionv3:
-        inception_score = tfgan.eval.classifier_score_from_logits(all_logits)
-    else:
-        inception_score = -1
-
-    return inception_score
+            if not inceptionv3:
+                np.savez_compressed(
+                    io_buffer, pool_3=latents["pool_3"], logits=latents["logits"])
+            else:
+                np.savez_compressed(
+                    io_buffer, pool_3=latents["pool_3"])
+            fout.write(io_buffer.getvalue())

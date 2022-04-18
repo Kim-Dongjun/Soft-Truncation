@@ -1,25 +1,7 @@
-# coding=utf-8
-# Copyright 2020 The Google Research Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-# Modified at 2021 by the authors of "Score Matching Model for Unbounded Data Score"
-
-
-
-"""Abstract SDE classes, Reverse SDE, and VE SDEs."""
+"""Abstract SDE classes, Reverse SDE, and VE/VP SDEs."""
 import abc
 import torch
+import torch.nn.functional as F
 import numpy as np
 
 
@@ -68,13 +50,10 @@ class SDE(abc.ABC):
     """
     pass
 
-  def get_random_times(self, st, size, device, t_min):
+  def get_diffusion_time(self, config):
     pass
 
-  def get_time(self):
-    return 1e5
-
-  def discretize(self, x, t, next_t):
+  def discretize(self, x, t, next_t=None):
     """Discretize the SDE in the form: x_{i+1} = x_i + f_i(x_i) + G_i z_i.
 
     Useful for reverse diffusion sampling and probabiliy flow sampling.
@@ -87,20 +66,20 @@ class SDE(abc.ABC):
     Returns:
       f, G
     """
-    #dt = 1 / self.N
-    dt = (next_t - t)[0].item()
+    dt = 1 / self.N
     drift, diffusion = self.sde(x, t)
     f = drift * dt
     G = diffusion * torch.sqrt(torch.tensor(dt, device=t.device))
     return f, G
 
-  def reverse(self, score_fn, probability_flow=False):
+  def reverse(self, score_fn, probability_flow=False, lambda_=1.):
     """Create the reverse-time SDE/ODE.
 
     Args:
       score_fn: A time-dependent score-based model that takes x and t and returns the score.
       probability_flow: If `True`, create the reverse-time ODE used for probability flow sampling.
     """
+    assert probability_flow == (lambda_ == 0.)
     N = self.N
     T = self.T
     sde_fn = self.sde
@@ -111,6 +90,11 @@ class SDE(abc.ABC):
       def __init__(self):
         self.N = N
         self.probability_flow = probability_flow
+        self.lambda_ = lambda_
+        if self.probability_flow:
+          self.weight = 0.5
+        else:
+          self.weight = 0.5 * (1. + self.lambda_ ** 2)
 
       @property
       def T(self):
@@ -120,23 +104,22 @@ class SDE(abc.ABC):
         """Create the drift and diffusion functions for the reverse SDE/ODE."""
         drift, diffusion = sde_fn(x, t)
         score = score_fn(x, t)
-        drift = drift - diffusion[:, None, None, None] ** 2 * score * (0.5 if self.probability_flow else 1.)
+        drift = drift - diffusion[:, None, None, None] ** 2 * score * self.weight
         # Set the diffusion function to zero for ODEs.
-        diffusion = 0. if self.probability_flow else diffusion
+        diffusion = self.lambda_ * diffusion
         return drift, diffusion
 
-      def discretize(self, x, t, next_t):
+      def discretize(self, x, t, next_t=None):
         """Create discretized iteration rules for the reverse diffusion sampler."""
         f, G = discretize_fn(x, t, next_t)
-        rev_f = f - G[:, None, None, None] ** 2 * score_fn(x, t) * (0.5 if self.probability_flow else 1.)
-        rev_G = torch.zeros_like(G) if self.probability_flow else G
+        rev_f = f - G[:, None, None, None] ** 2 * score_fn(x, t) * self.weight
+        rev_G = self.lambda_ * G
         return rev_f, rev_G
 
     return RSDE()
 
-
 class VPSDE(SDE):
-  def __init__(self, beta_min=0.1, beta_max=20, N=1000):
+  def __init__(self, truncation_time=1e-5, beta_min=0.1, beta_max=20, N=1000):
     """Construct a Variance Preserving SDE.
 
     Args:
@@ -147,6 +130,7 @@ class VPSDE(SDE):
     super().__init__(N)
     self.beta_0 = beta_min
     self.beta_1 = beta_max
+    self.eps = truncation_time
     self.N = N
     self.discrete_betas = torch.linspace(beta_min / N, beta_max / N, N)
     self.alphas = 1. - self.discrete_betas
@@ -179,19 +163,51 @@ class VPSDE(SDE):
     logps = -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.
     return logps
 
-  def discretize(self, x, t, next_t):
+  def discretize(self, x, t, next_t=None):
     """DDPM discretization."""
-    timestep = (t * (self.N - 1) / self.T).long()
-    beta = self.discrete_betas.to(x.device)[timestep]
-    alpha = self.alphas.to(x.device)[timestep]
-    sqrt_beta = torch.sqrt(beta)
-    f = torch.sqrt(alpha)[:, None, None, None] * x - x
-    G = sqrt_beta
+    if next_t == None:
+      timestep = (t * (self.N - 1) / self.T).long()
+      beta = self.discrete_betas.to(x.device)[timestep]
+      alpha = self.alphas.to(x.device)[timestep]
+      sqrt_beta = torch.sqrt(beta)
+      f = torch.sqrt(alpha)[:, None, None, None] * x - x
+      G = sqrt_beta
+    else:
+      G = torch.sqrt((t - next_t) * (self.beta_0 + (self.beta_1 - self.beta_0) * t))
+      f = torch.sqrt(1. - G ** 2)[:, None, None, None] * x - x
     return f, G
 
+  def integral_beta(self, t):
+    return 0.5 * t ** 2 * (self.beta_1 - self.beta_0) + t * self.beta_0
+
+  def antiderivative(self, t, stabilizing_constant=0.):
+    if isinstance(t, float) or isinstance(t, int):
+      t = torch.tensor(t).float()
+    return torch.log(1. - torch.exp(- self.integral_beta(t)) + stabilizing_constant) + self.integral_beta(t)
+
+  def normalizing_constant(self, t_min):
+    return self.antiderivative(self.T) - self.antiderivative(t_min)
+
+  def get_diffusion_time(self, config, batch_size, batch_device, t_min, importance_sampling=True):
+    if importance_sampling:
+      Z = self.normalizing_constant(t_min)
+      u = torch.rand(batch_size, device=batch_device)
+      return (-self.beta_0 + torch.sqrt(self.beta_0 ** 2 + 2 * (self.beta_1 - self.beta_0) *
+                torch.log(1. + torch.exp(Z * u + self.antiderivative(t_min))))) / (self.beta_1 - self.beta_0), Z.detach()
+    else:
+      return torch.rand(batch_size, device=batch_device) * (self.T - t_min) + t_min, 1
+
+  def get_t_min(self, config):
+    if config.training.st:
+      if config.training.k == 1.0:
+        return self.eps ** (1. - np.random.rand())
+      else:
+        return self.eps / (1. - np.random.rand() * (1 - self.eps ** (config.training.k - 1))) ** (1. / (config.training.k - 1))
+    else:
+      return self.eps
 
 class subVPSDE(SDE):
-  def __init__(self, beta_min=0.1, beta_max=20, N=1000):
+  def __init__(self, truncation_time=1e-5, beta_min=0.1, beta_max=20, N=1000):
     """Construct the sub-VP SDE that excels at likelihoods.
 
     Args:
@@ -221,7 +237,7 @@ class subVPSDE(SDE):
     std = 1 - torch.exp(2. * log_mean_coeff)
     return mean, std
 
-  def prior_sampling(self, shape):
+  def prior_sampling(self, shape, data_mean=None):
     return torch.randn(*shape)
 
   def prior_logp(self, z):
@@ -229,9 +245,8 @@ class subVPSDE(SDE):
     N = np.prod(shape[1:])
     return -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.
 
-
 class VESDE(SDE):
-  def __init__(self, transform_type='forward', sigma_min=0.01, sigma_max=50, N=1000):
+  def __init__(self, sigma_min=0.01, sigma_max=50, N=1000, truncation_time=1e-5):
     """Construct a Variance Exploding SDE.
 
     Args:
@@ -242,13 +257,7 @@ class VESDE(SDE):
     super().__init__(N)
     self.sigma_min = sigma_min
     self.sigma_max = sigma_max
-    self.transform_type = transform_type
-
-    self.t_0 = torch.tensor(self.get_time())
-    self.sigma_0 = 0.01
-    self.c_1 = np.log(self.sigma_max / self.sigma_0) / (self.T - self.t_0) * self.sigma_0 / np.log(self.sigma_max/self.sigma_min)
-    self.c_2 = self.c_1 / (self.sigma_0 + 1e-4) + np.log(self.sigma_0)
-
+    self.eps = truncation_time
     self.discrete_sigmas = torch.exp(torch.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N))
     self.N = N
 
@@ -276,44 +285,53 @@ class VESDE(SDE):
     N = np.prod(shape[1:])
     return -N / 2. * np.log(2 * np.pi * self.sigma_max ** 2) - torch.sum(z ** 2, dim=(1, 2, 3)) / (2 * self.sigma_max ** 2)
 
-  def transform(self, sigmas):
-    if self.transform_type == 'old':
-      res = 1. / sigmas
-    elif self.transform_type == None:
-      res = sigmas
-    elif self.transform_type == 'forward':
-      res = torch.log(sigmas)
-    elif self.transform_type == 'ver3':
-      res = (sigmas > self.sigma_0) * torch.log(sigmas) + (sigmas < self.sigma_0) * (-self.c_1 / (sigmas + 1e-4) + self.c_2)
-    else:
-      raise NotImplementedError
-    return res
-
-  def discretize(self, x, t, next_t):
+  def discretize(self, x, t, next_t=None):
     """SMLD(NCSN) discretization."""
-    timestep = (t * (self.N - 1) / self.T).long()
-    sigma = self.discrete_sigmas.to(t.device)[timestep]
-    adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t),
-                                 self.discrete_sigmas[timestep - 1].to(t.device))
+    #raise NotImplementedError
+    if next_t == None:
+      timestep = (t * (self.N - 1) / self.T).long()
+      sigma = self.discrete_sigmas.to(t.device)[timestep]
+      adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t),
+                                   self.discrete_sigmas[timestep - 1].to(t.device))
+    else:
+      if next_t[0].item() == 0.:
+        sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** t
+        adjacent_sigma = self.sigma_min * (self.sigma_max / self.sigma_min) ** next_t
+      else:
+        raise NotImplementedError
     f = torch.zeros_like(x)
     G = torch.sqrt(sigma ** 2 - adjacent_sigma ** 2)
     return f, G
 
-  def get_time(self, sigma_level=0.01):
-    time = np.log(sigma_level/self.sigma_min)/np.log(self.sigma_max/self.sigma_min)
-    return time
+  def antiderivative(self, t):
+    if isinstance(t, float) or isinstance(t, int):
+      t = torch.tensor(t).float()
+    return 2. * torch.log(self.sigma_min * (self.sigma_max / self.sigma_min) ** t)
 
-  def get_random_times(self, st, size, device, t_min):
-    if st == 'long':
-      min_ = t_min
-    elif st == 'short':
-      time = self.get_time()
-      min_ = np.random.rand() * (time - t_min) + t_min
+  def normalizing_constant(self, t_min):
+    return self.antiderivative(self.T) - self.antiderivative(t_min)
+
+  def get_diffusion_time(self, config, batch_size, batch_device, t_min, importance_sampling=None):
+    if importance_sampling is None:
+      importance_sampling = config.training.importance_sampling
+    if importance_sampling:
+      Z = self.normalizing_constant(t_min)
+      u = torch.rand(batch_size, device=batch_device)
+      return t_min + ((Z * u) / (2. * (np.log(self.sigma_max) - np.log(self.sigma_min)))), Z.detach()
     else:
-      raise NotImplementedError
-    return torch.rand(size, device=device) * (self.T - min_) + min_
+      return torch.rand(batch_size, device=batch_device) * (self.T - t_min) + t_min, 1
 
-class RVESDE(SDE):
+  def get_t_min(self, config, st=False):
+    if st:
+      if config.training.k == 1.0:
+        return self.eps ** (1. - np.random.rand())
+      else:
+        return self.eps / (1. - np.random.rand() * (1 - self.eps ** (config.training.k - 1))) ** (
+                  1. / (config.training.k - 1))
+    else:
+      return self.eps
+
+class reciprocal_VESDE(SDE):
   def __init__(self, eta=1e-5, sigma_min=0.01, sigma_max=50, N=1000):
     """Construct a Variance Exploding SDE.
 
@@ -326,11 +344,11 @@ class RVESDE(SDE):
     self.sigma_min = sigma_min
     self.sigma_max = sigma_max
     self.eta = eta
-    self.t_min = 1e-5
-    self.base_sigma = pow(self.eta / self.sigma_max, 1. / ((1. / self.t_min - 1.)))
+    self.eps = 1e-5
+    self.base_sigma = pow(self.eta / self.sigma_max, 1. / ((1. / self.eps - 1.)))
     self.const = self.sigma_max ** 2 / self.base_sigma ** 2
-    self.base_sigma_2 = pow(1.01, - 1. / (2. * (1. / self.t_min - 1.)))
-    self.const_2 = - pow(1.01, (1. / self.t_min) / (1. / self.t_min - 1.)) * (self.eta ** 2 - self.sigma_min ** 2)
+    self.base_sigma_2 = pow(1.01, - 1. / (2. * (1. / self.eps - 1.)))
+    self.const_2 = - pow(1.01, (1. / self.eps) / (1. / self.eps - 1.)) * (self.eta ** 2 - self.sigma_min ** 2)
 
     self.t_0 = torch.tensor(self.get_time())
     self.sigma_0 = torch.sqrt(
@@ -372,8 +390,14 @@ class RVESDE(SDE):
     N = np.prod(shape[1:])
     return -N / 2. * np.log(2 * np.pi * self.sigma_max ** 2) - torch.sum(z ** 2, dim=(1, 2, 3)) / (2 * self.sigma_max ** 2)
 
-  def discretize(self, x, t, next_t):
+  def discretize(self, x, t, next_t=None):
     """SMLD(NCSN) discretization."""
+    #timestep = (t * (self.N - 1) / self.T).long()
+    #sigma = self.discrete_sigmas.to(t.device)[timestep]
+    #print("sigma in predictor algorithm : ", sigma[0].item())
+    #print("sigma(t) in predictor algorithm : ", self.marginal_prob(x, t)[1][0].item())
+    #adjacent_sigma = torch.where(timestep == 0, torch.zeros_like(t),
+    #                             self.discrete_sigmas[timestep - 1].to(t.device))
     sigma = self.marginal_prob(x, t)[1]
     if next_t.type == 'torch.IntTensor':
       next_sigma = next_t
@@ -389,16 +413,31 @@ class RVESDE(SDE):
     return time
 
   def transform(self, sigmas):
-    ret = (sigmas > 0.01) * torch.log(sigmas) + (sigmas < 0.01) * (-self.c_1_ / (sigmas + 1e-4) + self.c_2__)
-    return ret
+    res = (sigmas > 0.01) * torch.log(sigmas) + (sigmas < 0.01) * (-self.c_1_ / (sigmas + 1e-4) + self.c_2__)
+    return res
 
-  def get_random_times(self, st, size, device, t_min):
-    if st == 'short':
-      time = self.get_time()
-    elif st == 'long':
-      time = 1. / self.T
+  def get_diffusion_time(self, config, batch_size, batch_device, t_min, importance_sampling=False):
+    time = torch.rand(batch_size, device=batch_device) * (1./self.eps - 1./t_min) + 1./t_min
+    return 1. / time, 1
+
+  def get_t_min(self, config, st=False):
+    if st:
+      max_ = np.random.rand() * (1. / self.eps - 1. / self.T) + 1. / self.T
+      return 1. / max_
     else:
-      raise NotImplementedError
-    max_ = np.random.rand() * (1./t_min - time) + time
-    t = torch.rand(size, device=device) * max_ + 1. / self.T
-    return 1. / t
+      return self.eps
+
+
+def get_sde(config, state):
+  if config.training.sde.lower() == 'vpsde':
+    sde = VPSDE(truncation_time=config.training.truncation_time, beta_min=config.model.beta_min, beta_max=config.model.beta_max, N=config.model.num_scales)
+  elif config.training.sde.lower() == 'subvpsde':
+    sde = subVPSDE(truncation_time=config.training.truncation_time, beta_min=config.model.beta_min, beta_max=config.model.beta_max, N=config.model.num_scales)
+  elif config.training.sde.lower() == 'vesde':
+    sde = VESDE(sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales)
+  elif config.training.sde.lower() == 'reciprocal_vesde':
+    sde = reciprocal_VESDE(sigma_min=config.model.sigma_min, sigma_max=config.model.sigma_max, N=config.model.num_scales, eta=config.training.eta)
+  else:
+    raise NotImplementedError(f"SDE {config.training.sde} unknown.")
+
+  return sde
