@@ -400,7 +400,7 @@ def get_bpd(config, eval_ds, scaler, inverse_scaler, nelbo_fn, nll_fn, score_mod
           nelbo_bpd, nelbo_residual_bpd = nelbo_fn(score_model, eval_batch, logdet, config.training.truncation_time)
           nelbo_bpds.extend(nelbo_bpd.detach().cpu().numpy().reshape(-1))
           nelbo_residual_bpds.extend(nelbo_residual_bpd.detach().cpu().numpy().reshape(-1))
-          print(np.mean(nelbo_bpds), np.mean(nelbo_residual_bpds))
+          #print(np.mean(nelbo_bpds), np.mean(nelbo_residual_bpds))
         torch.cuda.empty_cache()
         assert len(nelbo_bpds) == len(nelbo_residual_bpds)
         nelbo_residual_bpds = np.array(nelbo_residual_bpds) + np.array(nelbo_bpds)

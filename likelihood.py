@@ -114,12 +114,12 @@ def get_likelihood_fn(config, sde, inverse_scaler, hutchinson_type='Rademacher',
       z = mutils.from_flattened_numpy(zp[:-shape[0]], shape).to(data.device).type(torch.float32)
       delta_logp = mutils.from_flattened_numpy(zp[-shape[0]:], (shape[0],)).to(data.device).type(torch.float32)
       prior_logp = sde.prior_logp(z)
-      print("score bpd: ", - torch.mean(prior_logp + delta_logp) / np.prod(list(data.shape[1:])) / np.log(2) + 7. - inverse_scaler(-1.))
+      #print("score bpd: ", - torch.mean(prior_logp + delta_logp) / np.prod(list(data.shape[1:])) / np.log(2) + 7. - inverse_scaler(-1.))
 
       if mode == 'correct':
         residual_fn = get_likelihood_residual_fn(config, sde, score_fn, variance='scoreflow')
         residual_nll = residual_fn(data, eps)
-        print("residual bpd: ", torch.mean(residual_nll) / np.prod(list(data.shape[1:])) / np.log(2))
+        #print("residual bpd: ", torch.mean(residual_nll) / np.prod(list(data.shape[1:])) / np.log(2))
         delta_logp = delta_logp - residual_nll
 
       #print("logdet bpd: ", - torch.mean(logdet) / np.prod(list(batch.shape[1:])) / np.log(2))
@@ -269,10 +269,6 @@ def get_likelihood_residual_fn(config, sde, score_fn, variance='ddpm'):
     decoder_nll = -discretized_gaussian_log_likelihood(
       batch, means=q_mean, log_scales=torch.log(q_std)[:, None, None, None])
     p_entropy = np.prod(batch.shape[1:]) / 2. * (np.log(2 * np.pi) + 2 * torch.log(std) + 1.)
-    print("std: ", std[0], eps)
-    #print("!: ", decoder_nll.shape)
-    #print("!!: ", torch.min(batch), torch.max(batch), torch.min(q_mean), torch.max(q_mean))
-    print("!!!!!!: ", decoder_nll.sum(axis=(1,2,3)).mean().item() / 3072 / np.log(2), p_entropy.mean().item() / 3072 / np.log(2))
     residual = (decoder_nll).sum(axis=(1, 2, 3)) - p_entropy
 
     assert residual.shape == torch.Size([batch.shape[0]])
