@@ -363,6 +363,8 @@ class reciprocal_VESDE(SDE):
 
     self.c_2__ = np.log(self.sigma_0) + self.c_1_ / self.sigma_0
 
+    print("sde configs: ", self.eta, self.base_sigma, self.const, self.base_sigma_2, self.const_2, self.c_1_, self.c_2__)
+
     self.discrete_sigmas = torch.exp(torch.linspace(np.log(self.sigma_min), np.log(self.sigma_max), N))
     self.N = N
 
@@ -417,7 +419,7 @@ class reciprocal_VESDE(SDE):
     return res
 
   def get_diffusion_time(self, config, batch_size, batch_device, t_min, importance_sampling=False):
-    time = torch.rand(batch_size, device=batch_device) * (1./self.eps - 1./t_min) + 1./t_min
+    time = torch.rand(batch_size, device=batch_device) * (1./t_min - 1./self.T) + 1./self.T
     return 1. / time, 1
 
   def get_t_min(self, config, st=False):

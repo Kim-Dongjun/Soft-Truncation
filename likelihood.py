@@ -168,6 +168,7 @@ def get_elbo_fn(config, sde, inverse_scaler=None, hutchinson_type='Rademacher'):
     #time = torch.fmod(np.random.rand() + time, 1.) * (sde.T - sde.eps) + sde.eps
     if config.training.sde.lower() == 'reciprocal_vesde':
       qt = 1. / (1. / eps - 1. / sde.T)
+      #qt = 1. / eps - 1. / sde.T
     else:
       qt = 1 / (sde.T - eps)
     z = torch.randn_like(batch)
@@ -218,29 +219,17 @@ def get_likelihood_residual_fn(config, sde, score_fn, variance='ddpm'):
     assert x.shape == means.shape# == log_scales.shape
     centered_x = x - means
     inv_stdv = torch.exp(-log_scales)
-    if config.data.centered:
-      plus_in = inv_stdv * (centered_x + 1. / 255.)
-    else:
-      plus_in = inv_stdv * (centered_x + 1. / 255. / 2.)
+    plus_in = inv_stdv * (centered_x + 1. / 255.)
     cdf_plus = approx_standard_normal_cdf(plus_in)
-    if config.data.centered:
-      min_in = inv_stdv * (centered_x - 1. / 255.)
-    else:
-      min_in = inv_stdv * (centered_x - 1. / 255. / 2.)
+    min_in = inv_stdv * (centered_x - 1. / 255.)
     cdf_min = approx_standard_normal_cdf(min_in)
     log_cdf_plus = torch.log(torch.max(cdf_plus, torch.tensor(1e-12, device=cdf_plus.device)))
     log_one_minus_cdf_min = torch.log(torch.max(1. - cdf_min, torch.tensor(1e-12, device=cdf_plus.device)))
     cdf_delta = cdf_plus - cdf_min
-    if config.data.centered:
-      log_probs = torch.where(
-        x < -0.999, log_cdf_plus,
-        torch.where(x > 0.999, log_one_minus_cdf_min,
-                 torch.log(torch.max(cdf_delta, torch.tensor(1e-12, device=cdf_delta.device)))))
-    else:
-      log_probs = torch.where(
-        x < 0.0001, log_cdf_plus,
-        torch.where(x > 0.9999, log_one_minus_cdf_min,
-                    torch.log(torch.max(cdf_delta, torch.tensor(1e-12, device=cdf_delta.device)))))
+    log_probs = torch.where(
+      x < -0.999, log_cdf_plus,
+      torch.where(x > 0.999, log_one_minus_cdf_min,
+               torch.log(torch.max(cdf_delta, torch.tensor(1e-12, device=cdf_delta.device)))))
     assert log_probs.shape == x.shape
     return log_probs
 
@@ -272,9 +261,19 @@ def get_likelihood_residual_fn(config, sde, score_fn, variance='ddpm'):
     elif variance == 'scoreflow':
       q_std = beta / torch.mean(alpha, axis=(1, 2, 3))
 
+    if not config.data.centered:
+      batch = 2. * batch - 1.
+      q_mean = 2. * q_mean - 1.
+      q_std = 2. * q_std
+
     decoder_nll = -discretized_gaussian_log_likelihood(
       batch, means=q_mean, log_scales=torch.log(q_std)[:, None, None, None])
-    residual = (decoder_nll).sum(axis=(1, 2, 3))
+    p_entropy = np.prod(batch.shape[1:]) / 2. * (np.log(2 * np.pi) + 2 * torch.log(std) + 1.)
+    print("std: ", std[0], eps)
+    #print("!: ", decoder_nll.shape)
+    #print("!!: ", torch.min(batch), torch.max(batch), torch.min(q_mean), torch.max(q_mean))
+    print("!!!!!!: ", decoder_nll.sum(axis=(1,2,3)).mean().item() / 3072 / np.log(2), p_entropy.mean().item() / 3072 / np.log(2))
+    residual = (decoder_nll).sum(axis=(1, 2, 3)) - p_entropy
 
     assert residual.shape == torch.Size([batch.shape[0]])
     return residual

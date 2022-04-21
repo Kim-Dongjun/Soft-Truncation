@@ -374,15 +374,16 @@ def calculate_inception_score_CDSM(all_logits, inceptionv3):
 
   return inception_score
 
-def compute_bpd(config, eval_ds, scaler, nelbo_fn, nll_fn, score_model, step=0, eval=False):
-  get_bpd(config, eval_ds, scaler, nelbo_fn, nll_fn, score_model, step=step, eval=eval)
+def compute_bpd(config, eval_ds, scaler, inverse_scaler, nelbo_fn, nll_fn, score_model, step=0, eval=False):
+  get_bpd(config, eval_ds, scaler, inverse_scaler, nelbo_fn, nll_fn, score_model, step=step, eval=eval)
 
-def get_bpd(config, eval_ds, scaler, nelbo_fn, nll_fn, score_model, step=0, eval=False):
+def get_bpd(config, eval_ds, scaler, inverse_scaler, nelbo_fn, nll_fn, score_model, step=0, eval=False):
   with torch.no_grad():
     num_data = config.eval.num_test_data
 
     nelbo_iter = config.eval.nelbo_iter
     if not nelbo_iter == 0:
+      offset = 7. - inverse_scaler(-1.)
       nelbo_bpds_total = []
       nelbo_residual_bpds_total = []
       for _ in range(nelbo_iter):
@@ -399,16 +400,23 @@ def get_bpd(config, eval_ds, scaler, nelbo_fn, nll_fn, score_model, step=0, eval
           nelbo_bpd, nelbo_residual_bpd = nelbo_fn(score_model, eval_batch, logdet, config.training.truncation_time)
           nelbo_bpds.extend(nelbo_bpd.detach().cpu().numpy().reshape(-1))
           nelbo_residual_bpds.extend(nelbo_residual_bpd.detach().cpu().numpy().reshape(-1))
-          #print(np.mean(nelbo_bpds), np.mean(nelbo_residual_bpds))
+          print(np.mean(nelbo_bpds), np.mean(nelbo_residual_bpds))
         torch.cuda.empty_cache()
         assert len(nelbo_bpds) == len(nelbo_residual_bpds)
         nelbo_residual_bpds = np.array(nelbo_residual_bpds) + np.array(nelbo_bpds)
         logging.info("step: %d, num samples: %d, mean nelbo w/o residual bpd: %.5e, std nelbo w/o residual bpd: %.5e" % (
                         step, len(nelbo_bpds), np.mean(nelbo_bpds), np.std(nelbo_bpds)))
-        logging.info("step: %d, num samples: %d, mean nelbo w/ residual bpd: %.5e, std nelbo w/ residual bpd: %.5e" % (
-          step, len(nelbo_residual_bpds), np.mean(nelbo_residual_bpds), np.std(nelbo_residual_bpds)))
+        if config.data.dequantization != 'lossless':
+          logging.info("step: %d, num samples: %d, mean nelbo w/ residual bpd: %.5e, std nelbo w/ residual bpd: %.5e" % (
+            step, len(nelbo_residual_bpds), np.mean(nelbo_residual_bpds), np.std(nelbo_residual_bpds)))
+          nelbo_residual_bpds_total.append(np.mean(nelbo_residual_bpds))
+        else:
+          logging.info(
+            "step: %d, num samples: %d, mean nelbo w/ residual bpd: %.5e, std nelbo w/ residual bpd: %.5e" % (
+              step, len(nelbo_residual_bpds), np.mean(nelbo_residual_bpds) - offset, np.std(nelbo_residual_bpds)))
+          nelbo_residual_bpds_total.append(np.mean(nelbo_residual_bpds) - offset)
         nelbo_bpds_total.append(np.mean(nelbo_bpds))
-        nelbo_residual_bpds_total.append(np.mean(nelbo_residual_bpds))
+
       logging.info("min_time: %.5e, num samples: %d, num_iter: %d, mean nelbo w/o residual bpd: %.5e, std nelbo w/o residual bpd: %.5e" % (
         config.training.truncation_time, len(nelbo_bpds), nelbo_iter, np.mean(nelbo_bpds_total), np.std(nelbo_bpds_total)))
       logging.info("min_time: %.5e, num samples: %d, num_iter: %d, mean nelbo w/ residual bpd: %.5e, std nelbo w/ residual bpd: %.5e" % (

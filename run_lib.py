@@ -93,7 +93,7 @@ def train(config, workdir, assetdir):
         torch.cuda.empty_cache()
         ema.store(score_model.parameters())
         ema.copy_to(score_model.parameters())
-        evaluation.compute_bpd(config, eval_ds, scaler, nelbo_fn, nll_fn, score_model, state, step=step)
+        evaluation.compute_bpd(config, eval_ds, scaler, inverse_scaler, nelbo_fn, nll_fn, score_model, state, step=step)
         ema.restore(score_model.parameters())
         torch.cuda.empty_cache()
 
@@ -146,7 +146,7 @@ def evaluate(config,
   train_ds, eval_ds = datasets.get_dataset(config)
 
   if config.eval.enable_bpd:
-    evaluation.compute_bpd(config, eval_ds, scaler, nelbo_fn, nll_fn, score_model, step=int(state['step']), eval=True)
+    evaluation.compute_bpd(config, eval_ds, scaler, inverse_scaler, nelbo_fn, nll_fn, score_model, step=int(state['step']), eval=True)
 
   if config.eval.enable_sampling:
     sample_dir = os.path.join(workdir, "eval")
