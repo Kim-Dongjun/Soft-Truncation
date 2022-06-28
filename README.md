@@ -83,4 +83,6 @@ If you find the code useful for your research, please consider citing
 ```
 
 This work is heavily built upon the code from
-* Song, Yang, and Stefano Ermon. "Score-Based Generative Modeling through Stochastic Differential Equations." *Proceedings of the 33rd Annual Conference on Neural Information Processing Systems*. 2019.
+* Song, Yang, et al. "Score-Based Generative Modeling through Stochastic Differential Equations." *International Conference on Learning Representations (ICLR)*. 2021.
+* Song, Yang, et al. "Maximum likelihood training of score-based diffusion models." *Advances in Neural Information Processing Systems (NeurIPS)*. 2021.
+* Ho, Jonathan, Ajay Jain, and Pieter Abbeel. "Denoising diffusion probabilistic models." *Advances in Neural Information Processing Systems (NeurIPS)*. 2020.
